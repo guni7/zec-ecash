@@ -1,0 +1,34 @@
+# Note: git has no trailing comments; a "#" after a pattern becomes part of the pattern.
+
+# Build output
+target/
+
+# Secrets and local config
+.env
+.env.*
+!.env.example
+# mint mnemonic
+devnet/mintd.env
+# wallet seeds (devnet/user-wallet.seed, mint-wallet.seed, ecash-wallet.seed, any --seed path)
+*.seed
+
+# Wallet, mint and processor databases (SQLite incl. WAL/SHM/journal sidecars, redb)
+*.sqlite
+*.sqlite-shm
+*.sqlite-wal
+*.sqlite-journal
+*.redb
+
+# Devnet runtime state: Zebra regtest chain, cdk-mintd work dir (the only mint DB; see
+# README), retired mint DBs and wallet backups, logs, scratch output
+devnet/zebra-state/
+devnet/mint/
+devnet/archive/
+devnet/*.log
+devnet/quote.json
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+*.swp

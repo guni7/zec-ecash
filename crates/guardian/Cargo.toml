@@ -1,0 +1,10 @@
+[package]
+name = "guardian"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zec-frost = { path = "../zec-frost" }
+pczt.workspace = true
+tokio.workspace = true
+anyhow.workspace = true

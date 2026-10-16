@@ -1,0 +1,40 @@
+# Local Zcash regtest node for zec-ecash development (zebrad 6.4.2).
+# Every upgrade through NU6.3 (Ironwood) activates at height 1.
+# These heights MUST match regtest_network() in crates/zec-processor/src/regtest.rs.
+#
+# Start:  zebrad -c devnet/zebrad-regtest.toml start
+# Mine:   ./devnet/mine.sh 110
+
+[network]
+network = "Regtest"
+listen_addr = "127.0.0.1:18344"
+cache_dir = false
+
+[network.testnet_parameters.activation_heights]
+Overwinter = 1
+Sapling = 1
+Blossom = 1
+Heartwood = 1
+Canopy = 1
+NU5 = 1
+NU6 = 1
+"NU6.1" = 1
+"NU6.2" = 1
+"NU6.3" = 1
+
+[state]
+cache_dir = "./devnet/zebra-state"
+ephemeral = false
+
+[rpc]
+listen_addr = "127.0.0.1:18232"        # JSON-RPC: generate, getblockcount, sendrawtransaction
+enable_cookie_auth = false             # local only; never expose this port
+lightwalletd_listen_addr = "127.0.0.1:9067"   # built-in light-wallet gRPC (experimental, plaintext)
+
+[mining]
+# Block rewards go here. Use the regtest unified address (uregtest1...) of your
+# "user" test wallet, so it has ZEC to pay deposits with.
+miner_address = "uregtest13mths58ywmrd6nv5de7emcyu6umfsnrf2dwsz0mf37rtzrq6007aa5tfwr2ya8vrwe2wu0m0j0mmc9fpq9u63uvvtkgtem38vy3m29nj"
+
+[mempool]
+debug_enable_at_height = 0             # accept transactions immediately on regtest

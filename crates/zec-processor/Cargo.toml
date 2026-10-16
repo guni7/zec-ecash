@@ -1,0 +1,25 @@
+[package]
+name = "zec-processor"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cdk-common.workspace = true
+cdk-payment-processor.workspace = true
+zcash_primitives.workspace = true
+zcash_protocol.workspace = true
+zcash_keys.workspace = true
+zcash_client_backend.workspace = true
+zcash_client_sqlite.workspace = true
+pczt.workspace = true
+orchard.workspace = true
+zip32.workspace = true
+zec-frost = { path = "../zec-frost" }
+zec-wallet = { path = "../zec-wallet" }
+tokio.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+rusqlite.workspace = true
+futures.workspace = true

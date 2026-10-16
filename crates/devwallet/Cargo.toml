@@ -1,0 +1,9 @@
+[package]
+name = "devwallet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zec-wallet = { path = "../zec-wallet" }
+tokio.workspace = true
+anyhow.workspace = true

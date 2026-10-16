@@ -1,0 +1,21 @@
+[package]
+name = "zec-wallet"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zcash_client_backend.workspace = true
+zcash_client_sqlite.workspace = true
+zcash_keys.workspace = true
+zcash_primitives.workspace = true
+zcash_proofs.workspace = true
+zcash_protocol.workspace = true
+zip32.workspace = true
+secrecy.workspace = true
+rusqlite.workspace = true
+tonic.workspace = true
+rand.workspace = true
+hex.workspace = true
+anyhow.workspace = true
+async-trait.workspace = true
+orchard.workspace = true

@@ -1,0 +1,38 @@
+# Stock cdk-mintd, with all ZEC logic in our zec-processor (gRPC).
+# Run: CDK_MINTD_MNEMONIC="<24 words>" cdk-mintd --config mintd/config.toml
+
+[info]
+url = "http://127.0.0.1:8085/"
+listen_host = "127.0.0.1"
+listen_port = 8085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.quote_ttl]
+mint_ttl = 3600   # ZEC deposits wait for blocks, so quotes live longer than on Lightning
+melt_ttl = 600
+
+[mint_info]
+name = "zec-ecash testnet mint"
+description = "Testnet ZEC ecash. Ironwood reserves, 2-of-3 FROST withdrawals."
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "grpcprocessor"
+unit = "zat"
+# Must match zec-processor's ZEC_MIN_ZATS / ZEC_MAX_ZATS (mintd enforces these, not the processor's settings).
+min_mint = 1000
+max_mint = 100000000000
+min_melt = 1000
+max_melt = 100000000000
+
+[onchain]
+onchain_backend = "none"
+
+[grpc_processor]
+supported_units = ["zat"]
+address = "127.0.0.1"
+port = 50051
+# zec-processor serves plaintext gRPC; acceptable only because both run on loopback.
+allow_insecure = true

@@ -58,6 +58,19 @@ impl QuoteStore {
              CREATE TABLE IF NOT EXISTS zec_index_counter (
                  id         INTEGER PRIMARY KEY CHECK (id = 0),
                  next_index INTEGER NOT NULL
+             );
+             -- Withdrawals (melts). State only moves forward:
+             -- UNPAID -> BUILT -> SIGNING -> BROADCAST -> MINED, or -> FAILED.
+             CREATE TABLE IF NOT EXISTS zec_withdrawal (
+                 quote_id      TEXT PRIMARY KEY,
+                 address       TEXT NOT NULL,
+                 amount_zats   INTEGER NOT NULL,
+                 fee_zats      INTEGER NOT NULL,
+                 state         TEXT NOT NULL,
+                 pczt_blob     BLOB,
+                 txid          TEXT,
+                 expiry_height INTEGER,
+                 updated_at    INTEGER NOT NULL
              );",
         )?;
         Ok(QuoteStore { conn: Mutex::new(conn) })
@@ -161,6 +174,177 @@ impl QuoteStore {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum WithdrawalState {
+    Unpaid,
+    Built,
+    Signing,
+    Broadcast,
+    Mined,
+    Failed,
+}
+
+impl WithdrawalState {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Unpaid => "UNPAID",
+            Self::Built => "BUILT",
+            Self::Signing => "SIGNING",
+            Self::Broadcast => "BROADCAST",
+            Self::Mined => "MINED",
+            Self::Failed => "FAILED",
+        }
+    }
+
+    fn parse(s: &str) -> Result<Self> {
+        Ok(match s {
+            "UNPAID" => Self::Unpaid,
+            "BUILT" => Self::Built,
+            "SIGNING" => Self::Signing,
+            "BROADCAST" => Self::Broadcast,
+            "MINED" => Self::Mined,
+            "FAILED" => Self::Failed,
+            other => anyhow::bail!("unknown withdrawal state {other}"),
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Withdrawal {
+    pub quote_id: String,
+    pub address: String,
+    pub amount_zats: u64,
+    pub fee_zats: u64,
+    pub state: WithdrawalState,
+    pub pczt_blob: Option<Vec<u8>>,
+    pub txid: Option<String>,
+    /// 0 = never expires.
+    pub expiry_height: Option<u32>,
+    pub updated_at: u64,
+}
+
+fn now() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs() as i64)
+        .unwrap_or(0)
+}
+
+const WITHDRAWAL_COLUMNS: &str =
+    "quote_id, address, amount_zats, fee_zats, state, pczt_blob, txid, expiry_height, updated_at";
+
+fn row_to_withdrawal(r: &rusqlite::Row) -> rusqlite::Result<(Withdrawal, String)> {
+    Ok((
+        Withdrawal {
+            quote_id: r.get(0)?,
+            address: r.get(1)?,
+            amount_zats: r.get::<_, i64>(2)? as u64,
+            fee_zats: r.get::<_, i64>(3)? as u64,
+            state: WithdrawalState::Unpaid, // replaced by the parsed column below
+            pczt_blob: r.get(5)?,
+            txid: r.get(6)?,
+            expiry_height: r.get(7)?,
+            updated_at: r.get::<_, i64>(8)? as u64,
+        },
+        r.get(4)?,
+    ))
+}
+
+fn finish_row((mut w, state): (Withdrawal, String)) -> Result<Withdrawal> {
+    w.state = WithdrawalState::parse(&state)?;
+    Ok(w)
+}
+
+impl QuoteStore {
+    /// Records a priced withdrawal quote. Re-quoting an id that is still UNPAID updates it;
+    /// one that has gone further is left untouched.
+    pub fn insert_withdrawal(&self, quote_id: &str, address: &str, amount_zats: u64, fee_zats: u64) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "INSERT INTO zec_withdrawal (quote_id, address, amount_zats, fee_zats, state, updated_at)
+             VALUES (?1, ?2, ?3, ?4, 'UNPAID', ?5)
+             ON CONFLICT (quote_id) DO UPDATE SET
+                 address = excluded.address, amount_zats = excluded.amount_zats,
+                 fee_zats = excluded.fee_zats, updated_at = excluded.updated_at
+             WHERE zec_withdrawal.state = 'UNPAID'",
+            params![quote_id, address, amount_zats as i64, fee_zats as i64, now()],
+        )?;
+        Ok(())
+    }
+
+    pub fn withdrawal(&self, quote_id: &str) -> Result<Option<Withdrawal>> {
+        let conn = self.conn.lock().unwrap();
+        conn.query_row(
+            &format!("SELECT {WITHDRAWAL_COLUMNS} FROM zec_withdrawal WHERE quote_id = ?1"),
+            [quote_id],
+            row_to_withdrawal,
+        )
+        .optional()?
+        .map(finish_row)
+        .transpose()
+    }
+
+    pub fn withdrawals_in(&self, states: &[WithdrawalState]) -> Result<Vec<Withdrawal>> {
+        let conn = self.conn.lock().unwrap();
+        let mut stmt = conn.prepare(&format!(
+            "SELECT {WITHDRAWAL_COLUMNS} FROM zec_withdrawal ORDER BY updated_at, quote_id"
+        ))?;
+        let rows = stmt.query_map([], row_to_withdrawal)?;
+        let mut out = vec![];
+        for row in rows {
+            let w = finish_row(row?)?;
+            if states.contains(&w.state) {
+                out.push(w);
+            }
+        }
+        Ok(out)
+    }
+
+    /// UNPAID -> BUILT, saving the PCZT, the fee actually used and the expiry height.
+    /// Returns false (and changes nothing) if the row was not UNPAID.
+    pub fn mark_built(&self, quote_id: &str, pczt: &[u8], fee_zats: u64, expiry_height: u32) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "UPDATE zec_withdrawal SET state = 'BUILT', pczt_blob = ?2, fee_zats = ?3,
+                 expiry_height = ?4, updated_at = ?5
+             WHERE quote_id = ?1 AND state = 'UNPAID'",
+            params![quote_id, pczt, fee_zats as i64, expiry_height, now()],
+        )? == 1)
+    }
+
+    /// SIGNING -> BROADCAST, saving the txid. Called before the transaction is sent.
+    pub fn mark_broadcast(&self, quote_id: &str, txid: &str) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "UPDATE zec_withdrawal SET state = 'BROADCAST', txid = ?2, updated_at = ?3
+             WHERE quote_id = ?1 AND state = 'SIGNING'",
+            params![quote_id, txid, now()],
+        )? == 1)
+    }
+
+    /// Moves `quote_id` to `to` only if it is currently in one of `from`. Returns whether it moved,
+    /// so a transition (and the event that goes with it) happens at most once.
+    pub fn transition(&self, quote_id: &str, from: &[WithdrawalState], to: WithdrawalState) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        let from: Vec<&str> = from.iter().map(|s| s.as_str()).collect();
+        let placeholders = (0..from.len()).map(|i| format!("?{}", i + 4)).collect::<Vec<_>>().join(", ");
+        let to = to.as_str();
+        let mut args: Vec<&dyn rusqlite::ToSql> = vec![&quote_id, &to];
+        let ts = now();
+        args.push(&ts);
+        for f in &from {
+            args.push(f);
+        }
+        Ok(conn.execute(
+            &format!(
+                "UPDATE zec_withdrawal SET state = ?2, updated_at = ?3
+                 WHERE quote_id = ?1 AND state IN ({placeholders})"
+            ),
+            args.as_slice(),
+        )? == 1)
+    }
+}
+
 fn get_quote(tx: &Transaction, quote_id: &str) -> Result<Option<Quote>> {
     Ok(tx
         .query_row(
@@ -185,14 +369,17 @@ fn get_quote(tx: &Transaction, quote_id: &str) -> Result<Option<Quote>> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// A fresh on-disk DB path (on disk, so tests can "restart" by reopening it).
-    fn temp_db(name: &str) -> PathBuf {
+    /// A fresh on-disk DB path (on disk, so tests can "restart" by reopening it). Unique per
+    /// call: tests run in parallel and the clock alone can repeat (microsecond resolution).
+    pub(crate) fn temp_db(name: &str) -> PathBuf {
+        static NEXT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+        let n = NEXT.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let path = std::env::temp_dir().join(format!(
-            "zec-processor-test-{name}-{}-{}.sqlite",
+            "zec-processor-test-{name}-{}-{n}-{}.sqlite",
             std::process::id(),
             std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_nanos()
         ));

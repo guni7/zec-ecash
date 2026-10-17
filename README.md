@@ -14,7 +14,9 @@ signed 2-of-3 with FROST (RedPallas).
 
 ## Run the mint (separate process; it can't live in this workspace)
 Phase 1 is ZEC deposits: a mint quote gets a fresh address of the mint's reserve wallet,
-zec-processor watches for the payment, and the mint issues ecash. Withdrawals are Phase 2.
+zec-processor watches for the payment, and the mint issues ecash. Phase 2 is withdrawals: a
+melt sends ZEC from the Ironwood reserves to a shielded address, signed with the single mint
+key (2-of-3 FROST comes in Phase 4).
 With the regtest devnet running (see "Local devnet" below):
 
     cargo install cdk-mintd --locked
@@ -30,6 +32,9 @@ With the regtest devnet running (see "Local devnet" below):
     curl -s 127.0.0.1:8085/v1/info                      # nut04 lists method "zec", unit "zat"
     cargo run -p zec-ecash-cli -- deposit 50000         # prints an address, waits, mints
     cargo run -p devwallet -- send <that address> 50000 && ./devnet/mine.sh 1
+
+    cargo run -p zec-ecash-cli -- withdraw 20000 $(cargo run -q -p devwallet -- address)
+    ./devnet/mine.sh 1                                   # the CLI prints PAID and the txid
 
 After changing `mintd/config.toml`, run `cdk-mintd -w devnet/mint config apply --file mintd/config.toml`.
 Use only `devnet/mint` as the mint's work dir: a second mint database on the same URL has
@@ -47,8 +52,13 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
     ZEC_SYNC_INTERVAL_SECS=7
 
 - The processor speaks plaintext gRPC, so mintd needs `allow_insecure = true`; keep both on loopback.
-- `zec` also shows up under nut05 (melt) because cdk advertises custom methods both ways;
-  melt requests fail with "not supported yet" until Phase 2.
+- Withdrawals pay only unified addresses with an Orchard receiver (they land in Ironwood);
+  transparent and Sapling-only addresses are rejected at quote time.
+- A withdrawal reports Pending from the moment its transaction is built until it is mined, and
+  Failed only if it was never broadcast or expired unmined, because the mint refunds the ecash
+  on Failed. State lives in `zec_withdrawal` in `devnet/processor.sqlite`; after a crash the
+  processor fails unbroadcast withdrawals and rebroadcasts broadcast ones.
+- zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
 
 ## Why the mint is a separate process
 `cdk-sqlite` / `cdk-axum` and the Zcash crates conflict (`libsqlite3-sys`, `sha2`),

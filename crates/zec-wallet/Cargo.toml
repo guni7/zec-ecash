@@ -19,3 +19,4 @@ hex.workspace = true
 anyhow.workspace = true
 async-trait.workspace = true
 orchard.workspace = true
+pczt.workspace = true

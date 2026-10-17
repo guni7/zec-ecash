@@ -3,13 +3,15 @@
 //!   cargo run -p zec-ecash-cli -- deposit <zats>   # quote, print address, wait for PAID, mint
 //!   cargo run -p zec-ecash-cli -- mint <quote_id>  # finish an already-paid quote
 //!   cargo run -p zec-ecash-cli -- balance          # ecash balance in zat
+//!   cargo run -p zec-ecash-cli -- withdraw <zats> <uregtest1...>   # melt ecash to a ZEC address
 //!
 //! Flags (before the command): --mint <url> (default http://127.0.0.1:8085),
 //! --wallet <path> (default devnet/ecash-wallet; uses <path>.seed and <path>.redb).
 //! Pay the printed address from any wallet, e.g. `devwallet send <address> <zats>`, and
 //! mine a block on regtest (`./devnet/mine.sh 1`); the tokens are minted automatically.
 use std::{
-    collections::HashSet,
+    collections::{HashMap, HashSet},
+    future::IntoFuture,
     fs,
     path::{Path, PathBuf},
     sync::Arc,
@@ -18,10 +20,13 @@ use std::{
 
 use anyhow::{Context, Result, bail};
 use cdk::{
-    Amount,
+    Amount, MeltQuoteCreateResponse, MeltQuoteRequest,
     amount::SplitTarget,
-    nuts::{CurrencyUnit, Id, KeySetInfo, PaymentMethod},
-    wallet::{HttpClient, MintConnector, Wallet, types::KeysetLoadPolicy},
+    nuts::{CurrencyUnit, Id, KeySetInfo, MeltQuoteCustomRequest, MeltQuoteState, PaymentMethod},
+    wallet::{
+        HttpClient, MeltOutcome, MintConnector, Wallet,
+        types::{KeysetLoadPolicy, MeltQuote},
+    },
 };
 use cdk_redb::WalletRedbDatabase;
 use rand::RngCore;
@@ -32,6 +37,8 @@ const METHOD: &str = "zec";
 const UNIT: &str = "zat";
 /// NUT-20 key indexes to try when re-deriving the signing key of a quote not stored locally.
 const QUOTE_KEY_SEARCH: u32 = 1000;
+/// How often a waiting `withdraw` asks the mint for the melt quote's status.
+const STATUS_POLL: Duration = Duration::from_secs(15);
 /// How long `deposit` waits for the payment to confirm (the mint quote lives for an hour).
 const DEPOSIT_WAIT: Duration = Duration::from_secs(3600);
 
@@ -90,12 +97,102 @@ async fn main() -> Result<()> {
             println!("Minted {minted} zat in {} proofs", proofs.len());
             println!("balance {} zat", u64::from(wallet.total_balance().await?));
         }
+        ["withdraw", zats, address] => {
+            let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
+            withdraw(&wallet, zats, address).await?;
+        }
         ["balance"] => println!("{} zat", u64::from(wallet.total_balance().await?)),
         _ => bail!(
-            "usage: zec-ecash-cli [--mint <url>] [--wallet <path>] <deposit <zats>|mint <quote_id>|balance>"
+            "usage: zec-ecash-cli [--mint <url>] [--wallet <path>] \
+             <deposit <zats>|mint <quote_id>|withdraw <zats> <address>|balance>"
         ),
     }
     Ok(())
+}
+
+/// Melts `zats` of ecash into a ZEC payment to `address` and waits until the mint reports the
+/// withdrawal PAID (mined) or FAILED.
+async fn withdraw(wallet: &Wallet, zats: u64, address: &str) -> Result<()> {
+    let quote = melt_quote(wallet, zats, address).await?;
+    println!(
+        "quote {}: send {} zat, fee reserve {} zat (total {} zat of ecash)",
+        quote.id,
+        u64::from(quote.amount),
+        u64::from(quote.fee_reserve),
+        u64::from(quote.amount) + u64::from(quote.fee_reserve)
+    );
+    let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
+    let finalized = match prepared.confirm_prefer_async().await? {
+        MeltOutcome::Paid(done) => done,
+        MeltOutcome::Pending(pending) => {
+            println!("Pending: the transaction is being built and broadcast; waiting for it to be mined");
+            println!("(regtest: ./devnet/mine.sh 1)...");
+            // Also ask the mint for the quote's status now and then: a status request makes the
+            // mint check with zec-processor, which settles the melt even if a push was missed.
+            let nudge = HttpClient::new(wallet.mint_url.clone(), None);
+            let done = pending.into_future();
+            tokio::pin!(done);
+            loop {
+                tokio::select! {
+                    finalized = &mut done => break finalized?,
+                    _ = tokio::time::sleep(STATUS_POLL) => {
+                        let _ = nudge.get_melt_quote_status(PaymentMethod::from(METHOD), &quote.id).await;
+                    }
+                }
+            }
+        }
+    };
+    println!("state {}", finalized.state());
+    if finalized.state() != MeltQuoteState::Paid {
+        bail!("withdrawal {} did not complete; the ecash was returned to the wallet", quote.id);
+    }
+    println!("txid {}", finalized.payment_proof().unwrap_or("?"));
+    println!(
+        "sent {} zat, fee {} zat, change returned {} zat",
+        u64::from(finalized.amount()),
+        u64::from(finalized.fee_paid()),
+        finalized.change().map(|c| c.iter().map(|p| u64::from(p.amount)).sum::<u64>()).unwrap_or(0)
+    );
+    println!("balance {} zat", u64::from(wallet.total_balance().await?));
+    Ok(())
+}
+
+/// Requests a `zec` melt quote with an amount. CDK's `Wallet::melt_quote` can't do this for
+/// custom methods (0.18.2 always sends `amount: None`), so post it directly and store the
+/// quote the way `melt_quote_custom` does, so `prepare_melt` can use it.
+async fn melt_quote(wallet: &Wallet, zats: u64, address: &str) -> Result<MeltQuote> {
+    let request = MeltQuoteCustomRequest {
+        method: METHOD.to_owned(),
+        request: address.to_owned(),
+        unit: CurrencyUnit::custom(UNIT),
+        amount: Some(Amount::from(zats)),
+        extra: serde_json::Value::Null,
+    };
+    let resp = HttpClient::new(wallet.mint_url.clone(), None)
+        .post_melt_quote(MeltQuoteRequest::Custom(request))
+        .await
+        .context("the mint refused the withdrawal quote")?;
+    let MeltQuoteCreateResponse::Custom((_, resp)) = resp else {
+        bail!("unexpected melt quote response type");
+    };
+    let quote = MeltQuote {
+        id: resp.quote,
+        mint_url: Some(wallet.mint_url.clone()),
+        amount: resp.amount,
+        request: resp.request.unwrap_or_else(|| address.to_owned()),
+        unit: wallet.unit.clone(),
+        fee_reserve: resp.fee_reserve.unwrap_or_default(),
+        state: resp.state,
+        expiry: resp.expiry,
+        payment_proof: resp.payment_preimage,
+        estimated_blocks: None,
+        fee_index: None,
+        payment_method: PaymentMethod::from(METHOD),
+        used_by_operation: None,
+        version: 0,
+    };
+    wallet.localstore.add_melt_quote(quote.clone()).await?;
+    Ok(quote)
 }
 
 /// Compares the wallet's cached keysets with the mint's `/v1/keysets` on every start.

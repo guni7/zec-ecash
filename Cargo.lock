@@ -4562,6 +4562,7 @@ dependencies = [
  "schemerz-rusqlite",
  "secp256k1",
  "secrecy",
+ "serde",
  "shardtree",
  "static_assertions",
  "subtle",
@@ -4782,6 +4783,7 @@ dependencies = [
  "cdk-redb",
  "hex",
  "rand 0.8.8",
+ "serde_json",
  "tokio",
 ]
 
@@ -4827,6 +4829,7 @@ dependencies = [
  "async-trait",
  "hex",
  "orchard",
+ "pczt",
  "rand 0.8.8",
  "rusqlite",
  "secrecy",

@@ -2,18 +2,20 @@
 //! to stock cdk-mintd over gRPC (backend = "grpcprocessor"). Reserves live in the
 //! Ironwood pool; addresses use the Orchard-format receiver, which Ironwood shares.
 //!
-//! Phase 1: deposits (mint quotes) only. Configure with ZEC_* variables or `.env`
-//! (see config.rs), then:  cargo run -p zec-processor
+//! Phase 1: deposits (mint quotes). Phase 2: withdrawals (melt quotes), signed with the
+//! single mint key. Configure with ZEC_* variables or `.env` (see config.rs), then:
+//!   cargo run -p zec-processor
 mod backend;
 mod config;
 mod store;
+mod withdraw;
 
 use std::sync::Arc;
 
 use anyhow::Context;
 use cdk_common::payment::MintPayment;
 use cdk_payment_processor::PaymentProcessorServer;
-use zec_wallet::Wallet;
+use zec_wallet::{LocalSigner, Wallet};
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -31,8 +33,14 @@ async fn main() -> anyhow::Result<()> {
         .with_context(|| format!("cannot open the mint reserve wallet {}", cfg.mint_seed.display()))?;
     tracing::info!(address = %wallet.address()?, "mint reserve wallet");
     let store = store::QuoteStore::open(&cfg.processor_db)?;
+    // Phase 2 signs withdrawals with the single mint key; Phase 4 swaps in a FROST signer.
+    let signer = Arc::new(LocalSigner::from_seed_path(&cfg.mint_seed)?);
 
-    let backend = Arc::new(backend::ZecBackend::new(cfg.clone(), store, wallet));
+    let started = std::time::Instant::now();
+    tokio::task::spawn_blocking(zec_wallet::warm_proving_key).await??;
+    tracing::info!(elapsed = ?started.elapsed(), "Orchard proving key ready");
+
+    let backend = Arc::new(backend::ZecBackend::new(cfg.clone(), store, wallet, signer));
     backend.start().await?;
 
     // PaymentProcessorServer binds inside a background task, so a busy port (e.g. an old

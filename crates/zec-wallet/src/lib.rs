@@ -4,8 +4,12 @@
 //! Talks to Zebra's built-in light-wallet gRPC server (plaintext) and keeps its state in a
 //! zcash_client_sqlite database next to the seed file.
 pub mod regtest;
+mod signer;
 
 mod cache;
+
+pub use pczt::{self, Pczt};
+pub use signer::{LocalSigner, Signer};
 
 use std::{convert::Infallible, fs, path::Path};
 
@@ -14,10 +18,10 @@ use rand::{RngCore, rngs::OsRng};
 use secrecy::SecretVec;
 use zcash_client_backend::{
     data_api::{
-        Account, AccountBirthday, WalletRead, WalletWrite,
+        Account, AccountBirthday, InputSource, WalletRead, WalletWrite,
         wallet::{
-            ConfirmationsPolicy, SpendingKeys, create_proposed_transactions,
-            propose_standard_transfer_to_address,
+            ConfirmationsPolicy, SpendingKeys, create_pczt_from_proposal, create_proposed_transactions,
+            extract_and_store_transaction_from_pczt, propose_standard_transfer_to_address,
         },
     },
     fees::StandardFeeRule,
@@ -29,8 +33,15 @@ use zcash_keys::{
     address::Address,
     keys::{UnifiedAddressRequest, UnifiedSpendingKey},
 };
+use pczt::roles::prover::Prover;
+use zcash_primitives::transaction::builder::{BundlePadding, cached_orchard_proving_key};
 use zcash_proofs::prover::LocalTxProver;
-use zcash_protocol::{ShieldedPool, local_consensus::LocalNetwork, value::Zatoshis};
+use zcash_protocol::{
+    ShieldedPool,
+    consensus::{BlockHeight, BranchId},
+    local_consensus::LocalNetwork,
+    value::Zatoshis,
+};
 use zip32::AccountId;
 
 pub use zcash_protocol::TxId;
@@ -303,23 +314,7 @@ impl Wallet {
     pub async fn send(&mut self, to: &str, zats: u64) -> Result<Vec<TxId>> {
         let params = regtest::regtest_network();
         let to = Address::decode(&params, to).with_context(|| format!("not a regtest address: {to}"))?;
-        let amount = Zatoshis::from_u64(zats).map_err(|_| anyhow!("amount out of range: {zats}"))?;
-
-        let proposal = propose_standard_transfer_to_address::<_, _, Infallible>(
-            &mut self.db,
-            &params,
-            StandardFeeRule::Zip317,
-            self.account_id,
-            CONFIRMATIONS,
-            &to,
-            amount,
-            None,
-            None,
-            ShieldedPool::Ironwood,
-            None,
-            None,
-        )
-        .map_err(|e| anyhow!("cannot build proposal: {e}"))?;
+        let proposal = self.propose(&to, zats)?;
 
         // Sapling provers are required by the builder API even for Ironwood-only transactions.
         let prover = LocalTxProver::bundled();
@@ -335,20 +330,179 @@ impl Wallet {
         )
         .map_err(|e| anyhow!("cannot create transaction: {e}"))?;
 
-        let mut client = connect(&self.lightwalletd).await?;
         let mut sent = vec![];
         for txid in txids {
-            let tx = self.db.get_transaction(txid)?.context("created transaction not in wallet DB")?;
-            let mut data = vec![];
-            tx.write(&mut data)?;
-            let resp = client.send_transaction(RawTransaction { data, height: 0 }).await?.into_inner();
-            if resp.error_code != 0 {
-                bail!("node rejected {txid}: {} (code {})", resp.error_message, resp.error_code);
-            }
+            self.broadcast(txid).await?;
             sent.push(txid);
         }
         Ok(sent)
     }
+
+    /// A standard ZIP 317 transfer proposal from this wallet's account; change goes to Ironwood.
+    fn propose(&mut self, to: &Address, zats: u64) -> Result<Proposal> {
+        let amount = Zatoshis::from_u64(zats).map_err(|_| anyhow!("amount out of range: {zats}"))?;
+        propose_standard_transfer_to_address::<_, _, Infallible>(
+            &mut self.db,
+            &regtest::regtest_network(),
+            StandardFeeRule::Zip317,
+            self.account_id,
+            CONFIRMATIONS,
+            to,
+            amount,
+            None,
+            None,
+            ShieldedPool::Ironwood,
+            None,
+            None,
+        )
+        .map_err(|e| anyhow!("cannot build proposal: {e}"))
+    }
+
+    /// The ZIP 317 fee a payment of `zats` to `to` would cost right now. Builds nothing.
+    pub fn quote_fee(&mut self, to: &str, zats: u64) -> Result<u64> {
+        let to = validate_withdrawal_address(to)?;
+        let proposal = self.propose(&to, zats)?;
+        Ok(proposal_fee(&proposal))
+    }
+
+    /// Proposes a payment and turns it into an unsigned, unproven PCZT (the mint never holds a
+    /// spending key here; a [`Signer`] authorizes it). Nothing is stored in the wallet yet.
+    pub fn build_pczt(&mut self, to: &str, zats: u64) -> Result<BuiltPczt> {
+        let to = validate_withdrawal_address(to)?;
+        let proposal = self.propose(&to, zats)?;
+        let fee = proposal_fee(&proposal);
+        let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
+            &mut self.db,
+            &regtest::regtest_network(),
+            self.account_id,
+            OvkPolicy::Sender,
+            &proposal,
+            None,
+            BundlePadding::DEFAULT,
+        )
+        .map_err(|e| anyhow!("cannot create PCZT: {e}"))?;
+        let expiry_height = *pczt.global().expiry_height();
+        Ok(BuiltPczt { pczt, fee, expiry_height })
+    }
+
+    /// Proves a signed PCZT, then extracts the transaction, verifies it, and stores it in the
+    /// wallet (its notes count as spent from now on). Returns the txid. Does not broadcast.
+    pub fn prove_and_extract(&mut self, signed: Pczt) -> Result<TxId> {
+        let branch = BranchId::try_from(*signed.global().consensus_branch_id())
+            .map_err(|e| anyhow!("PCZT has an invalid consensus branch: {e}"))?;
+        let version = orchard_circuit_version(branch)?;
+        // One Orchard proving key serves both pools post-NU6.3; cached after the first build.
+        let pk = cached_orchard_proving_key(version);
+        let (has_orchard, has_ironwood) =
+            (!signed.orchard().actions().is_empty(), !signed.ironwood().actions().is_empty());
+        let mut prover = Prover::new(signed);
+        if has_orchard {
+            prover = prover.create_orchard_proof(pk).map_err(|e| anyhow!("Orchard proof: {e:?}"))?;
+        }
+        if has_ironwood {
+            prover = prover.create_ironwood_proof(pk).map_err(|e| anyhow!("Ironwood proof: {e:?}"))?;
+        }
+        let proven = prover.finish();
+        let vk = orchard_verifying_key(version);
+        extract_and_store_transaction_from_pczt::<_, NoteRef>(&mut self.db, proven, None, Some(vk))
+            .map_err(|e| anyhow!("cannot extract transaction: {e}"))
+    }
+
+    /// Sends a transaction stored in the wallet DB to the node. Safe to repeat.
+    /// (`&mut self` so the future stays `Send`: the DB connection is not `Sync`.)
+    pub async fn broadcast(&mut self, txid: TxId) -> Result<()> {
+        let tx = self.db.get_transaction(txid)?.context("transaction not in wallet DB")?;
+        let mut data = vec![];
+        tx.write(&mut data)?;
+        let resp = connect(&self.lightwalletd)
+            .await?
+            .send_transaction(RawTransaction { data, height: 0 })
+            .await?
+            .into_inner();
+        if resp.error_code != 0 {
+            bail!("node rejected {txid}: {} (code {})", resp.error_message, resp.error_code);
+        }
+        Ok(())
+    }
+
+    /// Height at which the wallet has seen `txid` mined, as of the last sync.
+    pub fn tx_mined_height(&self, txid: TxId) -> Result<Option<u32>> {
+        Ok(self.db.get_tx_height(txid)?.map(u32::from))
+    }
+}
+
+/// Parses a txid in its usual display form (byte-reversed hex).
+pub fn parse_txid(s: &str) -> Result<TxId> {
+    let mut bytes: [u8; 32] = hex::decode(s.trim())
+        .context("txid is not hex")?
+        .try_into()
+        .map_err(|_| anyhow!("txid must be 32 bytes"))?;
+    bytes.reverse();
+    Ok(TxId::from_bytes(bytes))
+}
+
+/// A PCZT ready for the Signer, plus what the processor records about it.
+pub struct BuiltPczt {
+    pub pczt: Pczt,
+    pub fee: u64,
+    /// 0 means the transaction never expires.
+    pub expiry_height: u32,
+}
+
+type NoteRef = <Db as InputSource>::NoteRef;
+type Proposal = zcash_client_backend::proposal::Proposal<StandardFeeRule, NoteRef>;
+
+fn proposal_fee(proposal: &Proposal) -> u64 {
+    proposal.steps().iter().map(|s| u64::from(s.balance().fee_required())).sum()
+}
+
+/// Accepts only regtest addresses with an Orchard-format receiver, which pay into Ironwood:
+/// a unified address with an Orchard receiver. Transparent, Sapling-only, TEX, other-network
+/// and malformed addresses are rejected.
+pub fn validate_withdrawal_address(s: &str) -> Result<Address> {
+    let params = regtest::regtest_network();
+    let addr = Address::decode(&params, s.trim())
+        .with_context(|| format!("not a valid regtest Zcash address: {s}"))?;
+    match &addr {
+        Address::Unified(ua) if ua.orchard().is_some() => Ok(addr),
+        Address::Unified(_) => bail!("unified address has no Orchard receiver (needed to pay into Ironwood)"),
+        Address::Transparent(_) | Address::Tex(_) => bail!("transparent addresses are not supported; use a shielded unified address"),
+        Address::Sapling(_) => bail!("Sapling-only addresses are not supported; use a unified address with an Orchard receiver"),
+    }
+}
+
+fn orchard_circuit_version(branch: BranchId) -> Result<orchard::circuit::OrchardCircuitVersion> {
+    Ok(zcash_primitives::transaction::components::orchard::bundle_version_for_branch(
+        branch,
+        orchard::ValuePool::Orchard,
+    )
+    .context("this consensus branch has no Orchard pool")?
+    .circuit_version())
+}
+
+/// Builds the Orchard proving key for the current regtest consensus branch (a few seconds),
+/// so the first withdrawal doesn't pay for it. Later calls hit the cache.
+pub fn warm_proving_key() -> Result<()> {
+    let params = regtest::regtest_network();
+    let branch = BranchId::for_height(&params, BlockHeight::from_u32(1));
+    let version = orchard_circuit_version(branch)?;
+    cached_orchard_proving_key(version);
+    orchard_verifying_key(version);
+    Ok(())
+}
+
+fn orchard_verifying_key(
+    version: orchard::circuit::OrchardCircuitVersion,
+) -> &'static orchard::circuit::VerifyingKey {
+    static VKS: std::sync::Mutex<Vec<(orchard::circuit::OrchardCircuitVersion, &'static orchard::circuit::VerifyingKey)>> =
+        std::sync::Mutex::new(Vec::new());
+    let mut vks = VKS.lock().unwrap();
+    if let Some((_, vk)) = vks.iter().find(|(v, _)| *v == version) {
+        return vk;
+    }
+    let vk: &'static _ = Box::leak(Box::new(orchard::circuit::VerifyingKey::build(version)));
+    vks.push((version, vk));
+    vk
 }
 
 /// `addresses.diversifier_index_be` is the 11-byte index, big-endian.
@@ -392,6 +546,44 @@ mod tests {
         let (_, other) = ivk_and_fvk(&[8u8; 32]);
         let foreign = other.address_at(1u32, orchard::keys::Scope::External).diversifier();
         assert_eq!(recover_index(&ivk, foreign.as_array()), None);
+    }
+
+    #[test]
+    fn withdrawal_address_validation() {
+        use zcash_keys::keys::ReceiverRequirement::{Omit, Require};
+        let params = regtest::regtest_network();
+        let ufvk = spending_key(&[9u8; 32]).unwrap().to_unified_full_viewing_key();
+        let (full_ua, _) = ufvk.default_address(UnifiedAddressRequest::ALLOW_ALL).unwrap();
+
+        // Accepted: unified addresses with an Orchard receiver.
+        assert!(validate_withdrawal_address(&full_ua.encode(&params)).is_ok());
+        assert!(validate_withdrawal_address(&derive_address(&[9u8; 32]).unwrap()).is_ok());
+
+        // Rejected: transparent, Sapling-only (plain and unified), wrong network, malformed.
+        let t_addr = Address::Transparent(*full_ua.transparent().unwrap()).encode(&params);
+        // Sapling diversifiers aren't valid at every index, so ask for one explicitly.
+        let sapling_only = UnifiedAddressRequest::custom(Omit, Require, Omit).unwrap();
+        let (sapling_ua, _) = ufvk.default_address(sapling_only).unwrap();
+        let z_addr = Address::Sapling(*sapling_ua.sapling().unwrap()).encode(&params);
+        // Tests only: the same receivers encoded for mainnet, which must not decode on regtest.
+        let mainnet = full_ua.encode(&zcash_protocol::consensus::MainNetwork);
+        for (what, addr) in [
+            ("transparent", t_addr),
+            ("Sapling", z_addr),
+            ("Sapling-only UA", sapling_ua.encode(&params)),
+            ("mainnet UA", mainnet),
+            ("malformed", "uregtest1notanaddress".to_owned()),
+            ("empty", String::new()),
+        ] {
+            assert!(validate_withdrawal_address(&addr).is_err(), "{what} must be rejected: {addr}");
+        }
+    }
+
+    #[test]
+    fn txid_display_roundtrip() {
+        let txid = TxId::from_bytes([3u8; 32]);
+        assert_eq!(parse_txid(&txid.to_string()).unwrap(), txid);
+        assert!(parse_txid("abc").is_err());
     }
 
     #[test]

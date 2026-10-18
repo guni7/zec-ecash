@@ -3,6 +3,7 @@
 //!
 //! Talks to Zebra's built-in light-wallet gRPC server (plaintext) and keeps its state in a
 //! zcash_client_sqlite database next to the seed file.
+pub mod frost;
 pub mod regtest;
 mod signer;
 
@@ -18,7 +19,7 @@ use rand::{RngCore, rngs::OsRng};
 use secrecy::SecretVec;
 use zcash_client_backend::{
     data_api::{
-        Account, AccountBirthday, InputSource, WalletRead, WalletWrite,
+        Account, AccountBirthday, AccountPurpose, InputSource, WalletRead, WalletWrite,
         wallet::{
             ConfirmationsPolicy, SpendingKeys, create_pczt_from_proposal, create_proposed_transactions,
             extract_and_store_transaction_from_pczt, propose_standard_transfer_to_address,
@@ -31,7 +32,7 @@ use zcash_client_backend::{
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
 use zcash_keys::{
     address::Address,
-    keys::{UnifiedAddressRequest, UnifiedSpendingKey},
+    keys::{UnifiedAddressRequest, UnifiedFullViewingKey, UnifiedSpendingKey},
 };
 use pczt::roles::prover::Prover;
 use zcash_primitives::transaction::builder::{BundlePadding, cached_orchard_proving_key};
@@ -124,6 +125,11 @@ impl Balances {
     }
 }
 
+enum Key {
+    Seed(Vec<u8>),
+    Ufvk(Box<UnifiedFullViewingKey>),
+}
+
 /// A non-change Ironwood note the wallet has received in a mined transaction.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ReceivedNote {
@@ -140,7 +146,8 @@ pub struct ReceivedNote {
 pub struct Wallet {
     db: Db,
     db_path: std::path::PathBuf,
-    seed: Vec<u8>,
+    /// `None` for a view-only (UFVK) wallet: it can build PCZTs but not sign.
+    seed: Option<Vec<u8>>,
     account_id: DbAccountId,
     lightwalletd: String,
 }
@@ -151,9 +158,37 @@ impl Wallet {
     /// Async because the first run fetches the account birthday's tree state from the node.
     pub async fn open_or_create(seed_path: &Path, db_path: &Path, lightwalletd: &str) -> Result<Self> {
         let seed = read_seed(seed_path)?;
+        let wallet = Self::open(db_path, lightwalletd, Key::Seed(seed)).await?;
+        // The DB account must be the same wallet whose address the seed alone gives.
+        let seed = wallet.seed.as_deref().expect("seed wallet");
+        assert_eq!(wallet.address()?, derive_address(seed)?, "wallet DB account does not match the seed");
+        Ok(wallet)
+    }
+
+    /// Opens a view-only wallet for `ufvk` (no spending key anywhere in this process), importing
+    /// the account on first use. Spends are built as PCZTs and authorized by an external
+    /// [`Signer`] (the FROST guardians).
+    pub async fn open_or_import_ufvk(ufvk: &str, db_path: &Path, lightwalletd: &str) -> Result<Self> {
+        let parsed = UnifiedFullViewingKey::decode(&regtest::regtest_network(), ufvk.trim())
+            .map_err(|e| anyhow!("not a regtest UFVK: {e}"))?;
+        let wallet = Self::open(db_path, lightwalletd, Key::Ufvk(Box::new(parsed))).await?;
+        let stored = wallet.ufvk()?;
+        anyhow::ensure!(
+            stored.encode(&regtest::regtest_network()) == ufvk.trim(),
+            "{} belongs to a different UFVK",
+            db_path.display()
+        );
+        Ok(wallet)
+    }
+
+    async fn open(db_path: &Path, lightwalletd: &str, key: Key) -> Result<Self> {
         let mut db = WalletDb::for_path(db_path, regtest::regtest_network(), SystemClock, OsRng)
             .with_context(|| format!("cannot open {}", db_path.display()))?;
-        init_wallet_db(&mut db, Some(SecretVec::new(seed.clone())))
+        let seed = match &key {
+            Key::Seed(seed) => Some(seed.clone()),
+            Key::Ufvk(_) => None,
+        };
+        init_wallet_db(&mut db, seed.clone().map(SecretVec::new))
             .map_err(|e| anyhow!("wallet DB migration failed: {e}"))?;
 
         let account_id = match db.get_account_ids()?.first() {
@@ -170,25 +205,25 @@ impl Wallet {
                     .into_inner();
                 let birthday = AccountBirthday::from_treestate(block1, None)
                     .map_err(|e| anyhow!("bad tree state for block 1: {e:?}"))?;
-                db.create_account("zec-wallet", &SecretVec::new(seed.clone()), &birthday, None)?
-                    .0
+                match &key {
+                    Key::Seed(seed) => {
+                        db.create_account("zec-wallet", &SecretVec::new(seed.clone()), &birthday, None)?
+                            .0
+                    }
+                    Key::Ufvk(ufvk) => db
+                        .import_account_ufvk("zec-wallet", ufvk, &birthday, AccountPurpose::ViewOnly, None)?
+                        .id(),
+                }
             }
         };
 
-        let wallet = Wallet {
-            db,
-            db_path: db_path.to_owned(),
-            seed,
-            account_id,
-            lightwalletd: lightwalletd.to_owned(),
-        };
-        // The DB account must be the same wallet whose address the seed alone gives.
-        assert_eq!(
-            wallet.address()?,
-            derive_address(&wallet.seed)?,
-            "wallet DB account does not match the seed"
-        );
-        Ok(wallet)
+        Ok(Wallet { db, db_path: db_path.to_owned(), seed, account_id, lightwalletd: lightwalletd.to_owned() })
+    }
+
+    /// The account's unified full viewing key.
+    pub fn ufvk(&self) -> Result<UnifiedFullViewingKey> {
+        let account = self.db.get_account(self.account_id)?.context("wallet account missing")?;
+        account.ufvk().cloned().context("account has no UFVK")
     }
 
     /// The account's default address (uregtest1..., Orchard-format receiver).
@@ -323,7 +358,9 @@ impl Wallet {
             &params,
             &prover,
             &prover,
-            &SpendingKeys::from_unified_spending_key(spending_key(&self.seed)?),
+            &SpendingKeys::from_unified_spending_key(spending_key(
+                self.seed.as_deref().context("view-only wallet: use build_pczt + a Signer")?,
+            )?),
             OvkPolicy::Sender,
             &proposal,
             None,

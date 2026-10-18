@@ -1,14 +1,24 @@
 //! Demo wallet CLI on the CDK wallet crate (regtest devnet; NOT for real funds).
 //!
-//!   cargo run -p zec-ecash-cli -- deposit <zats>   # quote, print address, wait for PAID, mint
-//!   cargo run -p zec-ecash-cli -- mint <quote_id>  # finish an already-paid quote
-//!   cargo run -p zec-ecash-cli -- balance          # ecash balance in zat
-//!   cargo run -p zec-ecash-cli -- withdraw <zats> <uregtest1...>   # melt ecash to a ZEC address
+//!   zec-ecash-cli init                         # create this wallet's seed (never overwrites)
+//!   zec-ecash-cli deposit <zat>                # quote, print address, wait for PAID, mint
+//!   zec-ecash-cli mint <quote_id>              # finish an already-paid quote
+//!   zec-ecash-cli balance                      # ecash balance in zat
+//!   zec-ecash-cli send <zat> [--lock <pubkey>] # cashuB token (+ terminal QR), optionally P2PK-locked
+//!   zec-ecash-cli receive <token>              # redeem a token at the mint
+//!   zec-ecash-cli pubkey                       # this wallet's P2PK public key (from its seed)
+//!   zec-ecash-cli withdraw <zat> <uregtest1...>   # melt ecash to a ZEC address
 //!
-//! Flags (before the command): --mint <url> (default http://127.0.0.1:8085),
-//! --wallet <path> (default devnet/ecash-wallet; uses <path>.seed and <path>.redb).
-//! Pay the printed address from any wallet, e.g. `devwallet send <address> <zats>`, and
-//! mine a block on regtest (`./devnet/mine.sh 1`); the tokens are minted automatically.
+//! Global flags (before the command), each also settable in the environment or `.env`:
+//!   --wallet <name>   default "ecash": seed devnet/keys/<name>-wallet.seed (survives resets),
+//!                     DB devnet/<name>-wallet.redb (deleted by resets). `--wallet bob` is Bob.
+//!   --mint <url>      ZEC_MINT_URL, default http://127.0.0.1:8085. Must be the exact URL the
+//!                     phone uses (tokens carry it), e.g. https://<LAN-IP>:5173/mint
+//!   --mint-ca <pem>   ZEC_MINT_CA: extra CA to trust for an https mint URL (e.g. mkcert's
+//!                     rootCA.pem). The OS trust store is used too.
+//! The seed is never created implicitly: `init` creates it once.
+mod tokens;
+
 use std::{
     collections::{HashMap, HashSet},
     future::IntoFuture,
@@ -18,7 +28,7 @@ use std::{
     time::Duration,
 };
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, bail, ensure};
 use cdk::{
     Amount, MeltQuoteCreateResponse, MeltQuoteRequest,
     amount::SplitTarget,
@@ -42,21 +52,67 @@ const STATUS_POLL: Duration = Duration::from_secs(15);
 /// How long `deposit` waits for the payment to confirm (the mint quote lives for an hour).
 const DEPOSIT_WAIT: Duration = Duration::from_secs(3600);
 
-#[tokio::main]
-async fn main() -> Result<()> {
-    let mut mint_url = "http://127.0.0.1:8085".to_owned();
-    let mut wallet_path = PathBuf::from("devnet/ecash-wallet");
-    let mut cmd = vec![];
+struct Opts {
+    wallet: String,
+    mint_url: String,
+    mint_ca: Option<PathBuf>,
+    cmd: Vec<String>,
+}
+
+fn parse_opts() -> Result<Opts> {
+    let dotenv = tokens::read_dotenv(Path::new(".env"));
+    let env = |k: &str| std::env::var(k).ok().or_else(|| dotenv.get(k).cloned());
+    let mut o = Opts {
+        wallet: "ecash".into(),
+        mint_url: env("ZEC_MINT_URL").unwrap_or_else(|| "http://127.0.0.1:8085".into()),
+        mint_ca: env("ZEC_MINT_CA").filter(|v| !v.is_empty()).map(PathBuf::from),
+        cmd: vec![],
+    };
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
-            "--mint" => mint_url = args.next().context("--mint needs a url")?,
-            "--wallet" => wallet_path = args.next().context("--wallet needs a path")?.into(),
-            _ => cmd.push(arg),
+            "--wallet" => o.wallet = args.next().context("--wallet needs a name")?,
+            "--mint" => o.mint_url = args.next().context("--mint needs a url")?,
+            "--mint-ca" => o.mint_ca = Some(args.next().context("--mint-ca needs a file")?.into()),
+            _ => o.cmd.push(arg),
         }
     }
+    ensure!(
+        !o.wallet.is_empty() && o.wallet.chars().all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_'),
+        "--wallet takes a name like `bob`, not a path"
+    );
+    Ok(o)
+}
 
-    let wallet = open_wallet(&mint_url, &wallet_path)?;
+fn main() -> Result<()> {
+    let opts = parse_opts()?;
+    // CDK's HTTP client (bitreq + rustls) trusts the OS store and SSL_CERT_FILE (feature
+    // `async-https-rustls-probe`, enabled in Cargo.toml). Set it before any thread or TLS
+    // config exists, i.e. before the runtime starts.
+    if let Some(ca) = &opts.mint_ca {
+        ensure!(ca.exists(), "--mint-ca / ZEC_MINT_CA file {} not found", ca.display());
+        if std::env::var_os("SSL_CERT_FILE").is_none() {
+            // SAFETY: single-threaded here; no other code reads the environment concurrently.
+            unsafe { std::env::set_var("SSL_CERT_FILE", ca) };
+        }
+    }
+    tokio::runtime::Runtime::new()?.block_on(run(opts))
+}
+
+async fn run(opts: Opts) -> Result<()> {
+    let seed_path = PathBuf::from(format!("devnet/keys/{}-wallet.seed", opts.wallet));
+    let db_path = PathBuf::from(format!("devnet/{}-wallet", opts.wallet));
+    let cmd = opts.cmd;
+    if cmd.first().map(String::as_str) == Some("init") {
+        return init_seed(&seed_path);
+    }
+    let seed = read_seed(&seed_path)?;
+    if cmd.first().map(String::as_str) == Some("pubkey") {
+        println!("{}", tokens::p2pk_key(&seed)?.public_key());
+        return Ok(());
+    }
+    let wallet = open_wallet(&opts.mint_url, &db_path, seed)
+        .with_context(|| format!("wallet `{}` at {}", opts.wallet, opts.mint_url))?;
     sync_keysets(&wallet).await?;
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["deposit", zats] => {
@@ -101,10 +157,27 @@ async fn main() -> Result<()> {
             let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
             withdraw(&wallet, zats, address).await?;
         }
+        ["send", zats, rest @ ..] => {
+            let zats: u64 = zats.parse().context("<zat> must be a whole number")?;
+            let lock = match rest {
+                [] => None,
+                ["--lock", pk] => Some(pk.parse().map_err(|e| anyhow::anyhow!("--lock needs a P2PK public key (hex): {e}"))?),
+                _ => bail!("usage: send <zat> [--lock <pubkey>]"),
+            };
+            let token = tokens::send(&wallet, zats, lock).await?;
+            println!("{token}");
+            tokens::print_qr(&token);
+            println!("sent {zats} zat{}; balance {} zat", if lock.is_some() { " (P2PK-locked)" } else { "" }, u64::from(wallet.total_balance().await?));
+        }
+        ["receive", token] => {
+            let received = tokens::receive(&wallet, &seed, token).await?;
+            println!("received {received} zat (redeemed at mint)");
+            println!("balance {} zat", u64::from(wallet.total_balance().await?));
+        }
         ["balance"] => println!("{} zat", u64::from(wallet.total_balance().await?)),
         _ => bail!(
-            "usage: zec-ecash-cli [--mint <url>] [--wallet <path>] \
-             <deposit <zats>|mint <quote_id>|withdraw <zats> <address>|balance>"
+            "usage: zec-ecash-cli [--wallet <name>] [--mint <url>] [--mint-ca <pem>] \
+             <init|deposit <zats>|mint <quote_id>|withdraw <zats> <address>|balance>"
         ),
     }
     Ok(())
@@ -244,23 +317,37 @@ async fn sync_keysets(wallet: &Wallet) -> Result<()> {
     Ok(())
 }
 
-/// Opens the CDK wallet at `<path>.redb`, creating `<path>.seed` (64 random bytes, hex) on
-/// first use.
-fn open_wallet(mint_url: &str, path: &Path) -> Result<Wallet> {
-    let seed_path = path.with_extension("seed");
-    if !seed_path.exists() {
-        let mut seed = [0u8; 64];
-        rand::rngs::OsRng.fill_bytes(&mut seed);
-        if let Some(dir) = seed_path.parent() {
-            fs::create_dir_all(dir)?;
-        }
-        fs::write(&seed_path, hex::encode(seed))?;
-        eprintln!("Created {} (devnet only, keep it out of git)", seed_path.display());
+/// `init`: creates the wallet seed (64 random bytes, hex). Refuses to overwrite one.
+fn init_seed(seed_path: &Path) -> Result<()> {
+    if seed_path.exists() {
+        bail!("{} already exists; delete it first if you really want a new ecash wallet", seed_path.display());
     }
-    let seed: [u8; 64] = hex::decode(fs::read_to_string(&seed_path)?.trim())
+    let mut seed = [0u8; 64];
+    rand::rngs::OsRng.fill_bytes(&mut seed);
+    if let Some(dir) = seed_path.parent() {
+        fs::create_dir_all(dir)?;
+    }
+    fs::write(seed_path, hex::encode(seed))?;
+    println!("Created {} (devnet only, keep it out of git)", seed_path.display());
+    Ok(())
+}
+
+/// Reads the wallet seed, which must exist (never created implicitly).
+fn read_seed(seed_path: &Path) -> Result<[u8; 64]> {
+    ensure!(
+        seed_path.exists(),
+        "{} is missing. The ecash wallet seed is never created implicitly: restore it, or run \
+         `zec-ecash-cli [--wallet <name>] init` for a new (empty) wallet",
+        seed_path.display()
+    );
+    hex::decode(fs::read_to_string(seed_path)?.trim())
         .context("seed file is not hex")?
         .try_into()
-        .map_err(|_| anyhow::anyhow!("seed file must hold 64 bytes"))?;
+        .map_err(|_| anyhow::anyhow!("seed file must hold 64 bytes"))
+}
+
+/// Opens the CDK wallet at `<path>.redb`.
+fn open_wallet(mint_url: &str, path: &Path, seed: [u8; 64]) -> Result<Wallet> {
     let db = WalletRedbDatabase::new(&path.with_extension("redb"))?;
     Ok(Wallet::new(mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, None)?)
 }

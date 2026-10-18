@@ -1,0 +1,21 @@
+#!/usr/bin/env sh
+# Start or stop individual guardian daemons (127.0.0.1:710N). Logs: devnet/guardian-N.log
+# (scripts/devnet-up.sh starts all three; scripts/devnet-up.sh status shows which are up)
+#   scripts/guardians start [1 2 3]     scripts/guardians stop [1 2 3]
+set -eu
+cd "$(dirname "$0")/.."
+cmd="${1:-start}"; shift || true
+ids="${*:-1 2 3}"
+case "$cmd" in
+  start)
+    cargo build -q -p guardian
+    for id in $ids; do
+      nohup ./target/debug/guardian --id "$id" serve > "devnet/guardian-$id.log" 2>&1 &
+      echo "guardian $id: pid $! on 127.0.0.1:710$id"
+    done ;;
+  stop)
+    for id in $ids; do
+      pkill -TERM -f "target/debug/guardian --id $id serve" && echo "guardian $id stopped" || echo "guardian $id not running"
+    done ;;
+  *) echo "usage: scripts/guardians start|stop [ids]" >&2; exit 1 ;;
+esac

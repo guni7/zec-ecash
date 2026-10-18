@@ -15,19 +15,11 @@ signed 2-of-3 with FROST (RedPallas).
 ## Run the mint (separate process; it can't live in this workspace)
 Phase 1 is ZEC deposits: a mint quote gets a fresh address of the mint's reserve wallet,
 zec-processor watches for the payment, and the mint issues ecash. Phase 2 is withdrawals: a
-melt sends ZEC from the Ironwood reserves to a shielded address, signed with the single mint
-key (2-of-3 FROST comes in Phase 4).
-With the regtest devnet running (see "Local devnet" below):
-
-    cargo install cdk-mintd --locked
-    cargo run -p devwallet -- --seed devnet/mint-wallet.seed new   # once: mint reserve wallet
-    cargo run -p zec-processor &          # gRPC on 127.0.0.1:50051, syncs every 7 s
-
-    # once: a devnet mint mnemonic in devnet/mintd.env (CDK_MINTD_MNEMONIC="<24 words>"),
-    # then store the config in the mint's database
-    set -a; . devnet/mintd.env; set +a
-    cdk-mintd -w devnet/mint config init --new-mint --file mintd/config.toml
-    cdk-mintd -w devnet/mint --enable-logging           # HTTP on 127.0.0.1:8085
+melt sends ZEC from the Ironwood reserves to a shielded address. Phase 4: withdrawals are
+authorized by 2-of-3 FROST guardians; zec-processor's reserve wallet is view-only (a UFVK
+whose Orchard `ak` is the guardians' group key) and no process holds the whole spend key.
+The whole devnet (node, guardians, processor, mint) is started by `scripts/devnet-up.sh`;
+see "Local devnet" below. Then:
 
     curl -s 127.0.0.1:8085/v1/info                      # nut04 lists method "zec", unit "zat"
     cargo run -p zec-ecash-cli -- deposit 50000         # prints an address, waits, mints
@@ -43,7 +35,11 @@ different keysets, and wallets that used one fail against the other ("Unknown Ke
 zec-processor settings (environment, or `.env` in the repo root; defaults shown):
 
     ZEC_LIGHTWALLETD=http://127.0.0.1:9067
-    ZEC_MINT_SEED=devnet/mint-wallet.seed     # wallet DB: devnet/mint-wallet.sqlite
+    ZEC_MINT_UFVK=devnet/keys/mint.ufvk       # view-only reserve key; startup fails if missing
+    ZEC_MINT_DB=devnet/mint-reserve.sqlite
+    ZEC_FROST_PUBKEYS=devnet/keys/frost-pubkeys.json   # startup fails if missing
+    ZEC_GUARDIANS=http://127.0.0.1:7101,http://127.0.0.1:7102,http://127.0.0.1:7103
+    ZEC_GUARDIAN_TIMEOUT_SECS=30              # per FROST round
     ZEC_PROCESSOR_DB=devnet/processor.sqlite  # quote table zec_deposit_address
     ZEC_GRPC_ADDR=127.0.0.1:50051
     ZEC_CONFIRMATIONS=1
@@ -59,6 +55,66 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
   on Failed. State lives in `zec_withdrawal` in `devnet/processor.sqlite`; after a crash the
   processor fails unbroadcast withdrawals and rebroadcasts broadcast ones.
 - zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
+- Signing: `make_payment` builds the PCZT and returns Pending; FROST signing runs in the
+  background (the mint locks the quote during `make_payment`, and guardians read the quote
+  from the mint before signing). Fewer than 2 guardians, or a refusal, means FAILED with
+  nothing broadcast, and the mint refunds.
+- Each guardian re-checks the withdrawal itself before signing: the mint says the melt is
+  PENDING; exactly one output pays the quoted amount to the quoted address; all other value
+  returns to the mint; every spend is the mint's; the fee fits the reserve; and it never signs
+  two different transactions for one quote.
+
+## Ecash wallets: CLI and web page (Phase 3)
+Both are demo wallets for this regtest devnet. Don't use real funds.
+
+    cargo run -p zec-ecash-cli -- init                     # once per wallet (seed in devnet/keys/)
+    cargo run -p zec-ecash-cli -- --wallet bob init        # a second wallet, "bob"
+    cargo run -p zec-ecash-cli -- send 5000                # cashuB token + terminal QR
+    cargo run -p zec-ecash-cli -- --wallet bob receive <token>
+    cargo run -p zec-ecash-cli -- --wallet bob pubkey      # P2PK key (derived from the seed)
+    cargo run -p zec-ecash-cli -- send 5000 --lock <bob's pubkey>   # only bob can redeem it
+
+`--wallet <name>` (default `ecash`) uses `devnet/keys/<name>-wallet.seed` and
+`devnet/<name>-wallet.redb`. The mint URL comes from `ZEC_MINT_URL` (or `--mint`), and the
+CA for an HTTPS mint URL from `ZEC_MINT_CA` (or `--mint-ca`), both read from `.env` too.
+
+### Web wallet on a phone
+An HTTPS page can't call the plain-HTTP mint, and a phone can't reach 127.0.0.1, so the Vite
+dev server serves the page over HTTPS on every interface and proxies `/mint/*` to the mint.
+The mint URL every wallet uses, and every token carries, is `https://<host>:5173/mint`. Use a
+stable hostname for `<host>`: this Mac's mDNS name doesn't change when the network or IP does.
+
+1. One-time setup (needs Node >= 20 and `brew install mkcert`):
+
+       (cd web && npm ci)
+       scripts/set-mint-host.sh --init     # first time only: adopt mkcert's root as web/certs/rootCA.pem
+
+2. Point everything at the hostname. Run this **before minting the ecash you'll demo**:
+
+       scripts/set-mint-host.sh            # default: $(scutil --get LocalHostName).local
+
+   It reissues the web server's leaf certificate (for the hostname, localhost, 127.0.0.1 and
+   the current LAN IP), sets `ZEC_MINT_URL` in `.env`, sets `[info] url` in
+   `mintd/config.toml` and applies it, then restarts the mint and the web server. It prints the
+   old and new mint URLs. Ecash minted under the old URL counts as a different mint from then
+   on; it is still redeemable with `zec-ecash-cli --mint <old url> ...`.
+   If the network blocks mDNS (the phone can't open the `.local` name), use the IP instead:
+   `scripts/set-mint-host.sh 192.168.1.22`. Then you must re-run it whenever the IP changes.
+3. Trust the root CA on the phone, once. Send it `web/certs/rootCA.pem` (AirDrop or email;
+   **only rootCA.pem, never rootCA-key.pem**, which stays in `mkcert -CAROOT`).
+   - iPhone: open the file, Settings > General > VPN & Device Management > install the profile,
+     then Settings > General > About > Certificate Trust Settings > turn on full trust for it.
+   - Android: Settings > Security > Encryption & credentials > Install a certificate > CA certificate.
+   `set-mint-host.sh` only reissues the leaf certificate from that same root, and refuses to run
+   if mkcert's root doesn't match `web/certs/rootCA.pem`. So the root installed on the phone stays
+   valid across hostname and IP changes.
+4. On the phone, open `https://<LocalHostName>.local:5173`. The green dot means
+   `/mint/v1/info` loaded; "Scan QR" asks for the camera (it only works over HTTPS).
+   `scripts/devnet-up.sh status` checks that the web URL reaches the mint.
+
+The CLI trusts the root through `ZEC_MINT_CA=web/certs/rootCA.pem` (CDK's HTTP client loads it
+via `SSL_CERT_FILE`, plus the OS store), so `mkcert -install` on the Mac is optional.
+`web/smoke.mjs` runs the page's cashu-ts calls from Node, for a check without a phone.
 
 ## Why the mint is a separate process
 `cdk-sqlite` / `cdk-axum` and the Zcash crates conflict (`libsqlite3-sys`, `sha2`),
@@ -72,31 +128,59 @@ so they can't share one Cargo resolve. The wallet CLI uses `cdk-redb` for the sa
 
 ## Local devnet (regtest)
 Zebra 6.4.2 serves the light-wallet gRPC protocol itself, so no lightwalletd or Zaino is needed.
+Prerequisites: `cargo install zebrad --version 6.4.2 --locked`, `cargo install cdk-mintd --locked`,
+and `CDK_MINTD_MNEMONIC="<24 words>"` in `.env` (the mint's only mnemonic source).
 
-    cargo install zebrad --version 6.4.2 --locked
-    # put your test wallet's uregtest1... address in devnet/zebrad-regtest.toml [mining]
-    zebrad -c devnet/zebrad-regtest.toml start
-    ./devnet/mine.sh 110                  # coinbase matures after 100 blocks
+### Keys: `devnet/keys/` (gitignored, survives every reset)
+
+| File | What |
+|---|---|
+| `guardian-{1,2,3}.key` | each guardian's FROST key share (secret; together they control the reserve) |
+| `frost-pubkeys.json` | the guardians' public key package |
+| `mint.ufvk` | the reserve's view-only key (Orchard `ak` = group key) |
+| `user-wallet.seed` | devwallet user wallet (zebrad's `miner_address`) |
+| `ecash-wallet.seed` | zec-ecash-cli wallet |
+
+Nothing generates keys implicitly: zec-processor, the guardians and the CLI fail at startup if
+theirs are missing. Everything else in `devnet/` is chain or mint state and may be deleted by a reset.
+
+### Start, check, reset
+
+    scripts/devnet-up.sh            # zebrad -> guardians 1-3 -> zec-processor -> cdk-mintd; waits for each
+    ./devnet/mine.sh 110            # on a fresh chain: coinbase matures after 100 blocks
+    scripts/devnet-up.sh status     # one line each; "guardians up: 1 2 down: 3 -> 2/3, can sign"
+    scripts/guardians stop 3        # stop/start single guardians (start 3 to bring it back)
+    scripts/devnet-reset.sh         # stop everything, delete chain + mint state, keep devnet/keys
+    scripts/devnet-reset.sh --new-keys   # also new FROST keys, mint.ufvk and wallet seeds (asks first)
+
+`devnet-reset.sh` deletes `devnet/zebra-state`, `devnet/mint` (cdk-mintd's work dir), every wallet
+DB (`devnet/*.sqlite`, `devnet/*.redb`), the processor DB, `guardian-*.signed.json` (per-quote state
+tied to the mint DB) and logs, and prints each path. Reserves and issued ecash only stay in step
+if all of these go together, so don't delete them piecemeal. Without `--new-keys` all addresses
+stay the same and `miner_address` stays valid. With it, reserves held by the old FROST key become
+unspendable (devnet only), and it prints the new user address for `miner_address` in
+`devnet/zebrad-regtest.toml`. Logs: `devnet/{zebrad,guardian-N,processor,mintd}.log`.
 
 - Light-wallet gRPC: http://127.0.0.1:9067 (plaintext; point zec-processor here)
 - JSON-RPC: http://127.0.0.1:18232 (`generate`, `getblockcount`)
 - Wallet code must use `regtest::regtest_network()`; its heights must match the toml.
 - Mine a block after each send (`./devnet/mine.sh`) so it confirms.
-- Reset the chain: stop zebrad, delete devnet/zebra-state.
 
 ## Test wallet
 `devwallet` is a regtest-only wallet (NOT for real funds) over the `zec-wallet` library crate,
 which zec-processor will reuse for the mint's reserve wallet. Run it from the repo root.
 Global flags go before the command:
-`--seed <path>` (default `devnet/user-wallet.seed`; the wallet DB is the same path with
-`.sqlite`) and `--lightwalletd <url>` (default `http://127.0.0.1:9067`).
+`--seed <path>` (default `devnet/keys/user-wallet.seed`), `--db <path>` (default
+`devnet/<seed name>.sqlite`), `--ufvk <path>` (a view-only wallet instead, in its own DB
+`devnet/<name>-view.sqlite`) and `--lightwalletd <url>` (default `http://127.0.0.1:9067`).
 
     cargo run -p devwallet -- new                       # create the seed, print its address
     cargo run -p devwallet -- address                   # print the uregtest1... address
     cargo run -p devwallet -- sync                      # scan to the chain tip, print its height
     cargo run -p devwallet -- balance                   # sync, then spendable/pending per pool
     cargo run -p devwallet -- send <uregtest1...> <zats>   # sync, build, prove, sign, broadcast
-    cargo run -p devwallet -- --seed devnet/mint-wallet.seed new   # the mint's reserve wallet
+    cargo run -p devwallet -- --seed devnet/keys/other.seed new     # a second, independent wallet
+    cargo run -p devwallet -- --ufvk devnet/keys/mint.ufvk balance  # the mint reserve, view-only
 
 - Put the user wallet's address in `devnet/zebrad-regtest.toml` `[mining] miner_address`.
 - Coinbase needs 100 confirmations: if funds show only as pending, `./devnet/mine.sh 110`.
@@ -106,5 +190,5 @@ Global flags go before the command:
   user wallet doesn't see block 1's coinbase.
 - Sapling proving parameters are compiled in (`zcash_proofs` `bundled-prover`), so nothing is
   downloaded; a send takes ~30 s in a debug build.
-- Reset a wallet's view of the chain: delete its `.sqlite` file (the seed stays). After a
-  chain reset, delete all `devnet/*.sqlite`.
+- The ecash CLI's seed is created once with `cargo run -p zec-ecash-cli -- init`
+  (`scripts/devnet-reset.sh --new-keys` does it); its wallet DB is `devnet/ecash-wallet.redb`.

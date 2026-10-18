@@ -12,7 +12,8 @@ cdk-redb = { version = "0.18.2", default-features = false, features = ["wallet"]
 # There is no separate "ironwood" feature: Ironwood (NU6.3) support is behind "orchard".
 zcash_primitives = "0.30.1"
 zcash_protocol = { version = "0.10.6", features = ["local-consensus"] }
-zcash_keys = { version = "0.16.1", features = ["orchard"] }
+# "unstable-frost": UnifiedFullViewingKey::from_orchard_fvk, for the FROST mint UFVK.
+zcash_keys = { version = "0.16.1", features = ["orchard", "unstable-frost"] }
 zcash_client_backend = { version = "0.24.0", features = ["orchard", "pczt", "sync", "lightwalletd-tonic", "lightwalletd-tonic-transport", "lightwalletd-tonic-tls-webpki-roots"] }
 # "serde": AccountUuid must be serializable for PCZT creation/extraction (zec-wallet withdrawals).
 zcash_client_sqlite = { version = "0.22.0", features = ["orchard", "multicore", "transparent-inputs", "serde"] }
@@ -26,6 +27,8 @@ tonic = "0.14"
 zip32 = "0.2.1"   # must match what zcash_keys uses (0.3 causes an AccountId type mismatch)
 # FROST over RedPallas
 reddsa = { version = "0.5", features = ["frost"] }
+# Same version reddsa uses; needed directly for rerandomized signing with a fixed alpha.
+frost-rerandomized = "3.0.0"
 # Runtime
 tokio = { version = "1", features = ["full"] }
 anyhow = "1"
@@ -33,6 +36,18 @@ rand = "0.8"
 hex = "0.4"
 async-trait = "0.1"
 futures = "0.3"
+pasta_curves = "0.5"
+serde = { version = "1", features = ["derive"] }
+# HTTP for the guardian protocol; versions already locked via tonic.
+axum = "0.8"
+hyper = "1"
+hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
+http-body-util = "0.1"
+# Terminal QR codes for ecash tokens (zec-ecash-cli).
+qrcode = { version = "0.14", default-features = false }
+# Same bitreq CDK's HTTP client uses; the "-probe" feature makes it trust the OS store and
+# SSL_CERT_FILE (e.g. mkcert's root), not only the built-in webpki roots.
+bitreq = { version = "0.3", default-features = false, features = ["async-https-rustls-probe"] }
 serde_json = "1"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }

@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="light dark" />
+    <title>zec-ecash demo wallet</title>
+    <link rel="stylesheet" href="/src/style.css" />
+  </head>
+  <body>
+    <div class="banner" role="alert">
+      Demo wallet on a local regtest devnet. Don't use real funds: ecash here is stored only in this
+      browser and is worthless outside this devnet.
+    </div>
+    <main>
+      <header>
+        <h1>zec-ecash</h1>
+        <p class="mint"><span id="mint-status" class="dot"></span><span id="mint-line">checking mint…</span></p>
+      </header>
+
+      <section class="card balance">
+        <div class="label">Balance</div>
+        <div><span id="balance" class="amount">0</span> <span class="unit">zat</span></div>
+      </section>
+
+      <section class="card">
+        <h2>Receive</h2>
+        <textarea id="receive-input" rows="3" placeholder="Paste a cashuB… token" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="scan-btn" type="button">Scan QR</button>
+          <button id="receive-btn" type="button" class="primary">Redeem</button>
+        </div>
+        <div id="scanner" class="scanner" hidden>
+          <video id="scanner-video" playsinline muted></video>
+          <button id="scan-stop" type="button">Stop camera</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Send</h2>
+        <div class="row">
+          <input id="send-amount" type="number" inputmode="numeric" min="1" step="1" placeholder="Amount" />
+          <span class="unit">zat</span>
+          <button id="send-btn" type="button" class="primary">Create token</button>
+        </div>
+        <div id="sent" class="sent" hidden>
+          <canvas id="sent-qr"></canvas>
+          <textarea id="sent-token" rows="3" readonly spellcheck="false"></textarea>
+          <div class="row">
+            <button id="copy-btn" type="button">Copy token</button>
+            <span id="sent-note" class="muted"></span>
+          </div>
+        </div>
+      </section>
+
+      <p id="message" class="message" role="status" aria-live="polite"></p>
+    </main>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>

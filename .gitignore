@@ -7,10 +7,13 @@ target/
 .env
 .env.*
 !.env.example
-# mint mnemonic
-devnet/mintd.env
-# wallet seeds (devnet/user-wallet.seed, mint-wallet.seed, ecash-wallet.seed, any --seed path)
+# Everything that must survive a devnet reset: guardian FROST key shares (secret), wallet
+# seeds (secret), the group public keys and the mint UFVK. The CDK mint mnemonic is in .env.
+devnet/keys/
+# any other wallet seed
 *.seed
+# per-quote guardian signing records (reset together with the mint DB)
+devnet/guardian-*.signed.json
 
 # Wallet, mint and processor databases (SQLite incl. WAL/SHM/journal sidecars, redb)
 *.sqlite
@@ -26,6 +29,11 @@ devnet/mint/
 devnet/archive/
 devnet/*.log
 devnet/quote.json
+
+# Demo web wallet: dependencies, build output, and the mkcert TLS key/certs (machine-specific)
+web/node_modules/
+web/dist/
+web/certs/
 
 # OS / editor
 .DS_Store

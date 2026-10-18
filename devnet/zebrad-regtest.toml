@@ -34,7 +34,7 @@ lightwalletd_listen_addr = "127.0.0.1:9067"   # built-in light-wallet gRPC (expe
 [mining]
 # Block rewards go here. Use the regtest unified address (uregtest1...) of your
 # "user" test wallet, so it has ZEC to pay deposits with.
-miner_address = "uregtest13mths58ywmrd6nv5de7emcyu6umfsnrf2dwsz0mf37rtzrq6007aa5tfwr2ya8vrwe2wu0m0j0mmc9fpq9u63uvvtkgtem38vy3m29nj"
+miner_address = "uregtest1fyemlup5tzgqajpn5kpegeu308zygn6r4r0udeh52tp2razp99d2r6yjr5lwhnhmtjkaazet39c3xzyl4z7372uepcxcvh22vvucjsur"
 
 [mempool]
 debug_enable_at_height = 0             # accept transactions immediately on regtest

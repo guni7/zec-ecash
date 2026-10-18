@@ -20,3 +20,9 @@ anyhow.workspace = true
 async-trait.workspace = true
 orchard.workspace = true
 pczt.workspace = true
+pasta_curves.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+zec-frost = { path = "../zec-frost" }
+tokio.workspace = true

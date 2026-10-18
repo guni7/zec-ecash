@@ -8,8 +8,17 @@ use anyhow::{Context, Result};
 pub struct Config {
     /// Zebra's light-wallet gRPC (plaintext).
     pub lightwalletd: String,
-    /// Mint reserve wallet seed; its wallet DB is the same path with `.sqlite`.
-    pub mint_seed: PathBuf,
+    /// The mint reserve's unified full viewing key (Orchard `ak` = FROST group key), written by
+    /// `zec-processor make-ufvk`. The processor holds no spending key at all.
+    pub mint_ufvk: PathBuf,
+    /// The reserve's view-only wallet DB.
+    pub mint_db: PathBuf,
+    /// The guardians' FROST public key package (from the DKG).
+    pub frost_pubkeys: PathBuf,
+    /// Guardian base URLs.
+    pub guardians: Vec<String>,
+    /// Per-round timeout for guardian requests.
+    pub guardian_timeout: Duration,
     /// Quote table (`zec_deposit_address`).
     pub processor_db: PathBuf,
     /// Where cdk-mintd's `grpcprocessor` backend connects.
@@ -22,10 +31,6 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn mint_wallet_db(&self) -> PathBuf {
-        self.mint_seed.with_extension("sqlite")
-    }
-
     pub fn load() -> Result<Self> {
         let dotenv = fs::read_to_string(".env").map(|s| parse_dotenv(&s)).unwrap_or_default();
         let get = |key: &str, default: &str| -> String {
@@ -40,7 +45,18 @@ impl Config {
 
         Ok(Config {
             lightwalletd: get("ZEC_LIGHTWALLETD", "http://127.0.0.1:9067"),
-            mint_seed: get("ZEC_MINT_SEED", "devnet/mint-wallet.seed").into(),
+            mint_ufvk: get("ZEC_MINT_UFVK", "devnet/keys/mint.ufvk").into(),
+            mint_db: get("ZEC_MINT_DB", "devnet/mint-reserve.sqlite").into(),
+            frost_pubkeys: get("ZEC_FROST_PUBKEYS", "devnet/keys/frost-pubkeys.json").into(),
+            guardians: get(
+                "ZEC_GUARDIANS",
+                "http://127.0.0.1:7101,http://127.0.0.1:7102,http://127.0.0.1:7103",
+            )
+            .split(',')
+            .map(|u| u.trim().trim_end_matches('/').to_owned())
+            .filter(|u| !u.is_empty())
+            .collect(),
+            guardian_timeout: Duration::from_secs(num("ZEC_GUARDIAN_TIMEOUT_SECS", "30")?),
             processor_db: get("ZEC_PROCESSOR_DB", "devnet/processor.sqlite").into(),
             grpc_addr: get("ZEC_GRPC_ADDR", "127.0.0.1:50051")
                 .parse()

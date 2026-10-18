@@ -2,7 +2,10 @@
 # Run: CDK_MINTD_MNEMONIC="<24 words>" cdk-mintd --config mintd/config.toml
 
 [info]
-url = "http://127.0.0.1:8085/"
+# The URL wallets use and tokens carry: the web wallet's HTTPS proxy (README "Web wallet on a
+# phone"). The mint itself listens on plain HTTP 127.0.0.1:8085 below. Set by
+# scripts/set-mint-host.sh, together with ZEC_MINT_URL in .env; don't edit by hand.
+url = "https://gunits-macbook-pro-2.local:5173/mint/"
 listen_host = "127.0.0.1"
 listen_port = 8085
 mnemonic = "env:CDK_MINTD_MNEMONIC"

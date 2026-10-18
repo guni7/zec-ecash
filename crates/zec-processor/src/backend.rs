@@ -14,7 +14,7 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU64, Ordering},
     },
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -52,6 +52,8 @@ pub struct ZecBackend {
     signer: Arc<dyn Signer>,
     events: broadcast::Sender<Event>,
     stream_active: Arc<AtomicBool>,
+    /// Unix time of the last settled-withdrawal replay (see `wait_payment_event`).
+    last_replay: AtomicU64,
     cancel_stream: Arc<Notify>,
     sync_task: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -65,6 +67,7 @@ impl ZecBackend {
             signer,
             events: broadcast::channel(1024).0,
             stream_active: Arc::new(AtomicBool::new(false)),
+            last_replay: AtomicU64::new(0),
             cancel_stream: Arc::new(Notify::new()),
             sync_task: std::sync::Mutex::new(None),
         }
@@ -178,14 +181,46 @@ impl ZecBackend {
         let quote_id = opts.quote_id.to_string();
         let max_fee = opts.max_fee_amount.map(|a| a.value());
 
-        // The wallet lock serializes withdrawals with each other and with the sync loop.
-        let mut wallet = self.wallet.lock().await;
-        let mut reserve = WalletReserve { wallet: &mut wallet, signer: self.signer.as_ref() };
-        let w = withdraw::make_payment(&self.store, &mut reserve, &quote_id, max_fee)
-            .await
-            .map_err(backend_err)?;
-        tracing::info!(%quote_id, state = w.state.as_str(), txid = ?w.txid, "withdrawal submitted");
+        // Build the PCZT now (fee checks fail fast, before anything exists), then return Pending
+        // and sign in the background. The mint holds this quote's lock until make_payment
+        // returns, and the guardians read the quote from the mint before signing, so signing
+        // inside make_payment would deadlock.
+        let begun = {
+            let mut wallet = self.wallet.lock().await;
+            let mut reserve = WalletReserve { wallet: &mut wallet, signer: self.signer.as_ref() };
+            withdraw::begin(&self.store, &mut reserve, &quote_id, max_fee).map_err(backend_err)?
+        };
+        let w = match begun {
+            withdraw::Begun::Existing(w) => w,
+            withdraw::Begun::Built(w) => {
+                self.spawn_completion(quote_id.clone());
+                w
+            }
+        };
+        tracing::info!(%quote_id, state = w.state.as_str(), "withdrawal accepted");
         outgoing_response(&w)
+    }
+
+    /// Signs (FROST), proves, extracts and broadcasts a BUILT withdrawal in the background.
+    /// A failure before broadcast leaves it FAILED and tells the mint, which refunds.
+    fn spawn_completion(&self, quote_id: String) {
+        let (store, wallet, signer, events) =
+            (self.store.clone(), self.wallet.clone(), self.signer.clone(), self.events.clone());
+        tokio::spawn(async move {
+            let mut wallet = wallet.lock().await;
+            let mut reserve = WalletReserve { wallet: &mut wallet, signer: signer.as_ref() };
+            match withdraw::complete(&store, &mut reserve, &quote_id).await {
+                Ok(w) => tracing::info!(%quote_id, state = w.state.as_str(), txid = ?w.txid, "withdrawal submitted"),
+                Err(e) => {
+                    tracing::warn!(%quote_id, "withdrawal FAILED, nothing broadcast: {e:#}");
+                    if let Ok(Some(w)) = store.withdrawal(&quote_id)
+                        && w.state == WithdrawalState::Failed
+                    {
+                        emit_failed(&events, &w, &format!("{e:#}"));
+                    }
+                }
+            }
+        });
     }
 
     /// Settlement events for withdrawals finished in the last day, replayed whenever the mint
@@ -313,6 +348,16 @@ fn backend_err(e: anyhow::Error) -> Error {
     Error::Anyhow(e)
 }
 
+/// Minimum time between settled-withdrawal replays.
+const REPLAY_INTERVAL_SECS: u64 = 60;
+
+/// True (and records `now`) if no replay happened in the last [`REPLAY_INTERVAL_SECS`].
+fn replay_due(last: &AtomicU64, now: u64) -> bool {
+    let prev = last.load(Ordering::SeqCst);
+    now.saturating_sub(prev) >= REPLAY_INTERVAL_SECS
+        && last.compare_exchange(prev, now, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+}
+
 fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
@@ -437,7 +482,15 @@ impl MintPayment for ZecBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         // Subscribe before reading the store so nothing settled in between is missed.
         let rx = self.events.subscribe();
-        let replay = self.settled_withdrawal_events().map_err(backend_err)?;
+        // Replay at most once per REPLAY_INTERVAL. cdk-payment-processor's server keeps calling
+        // wait_payment_event for a connection the mint has dropped (it only stops on shutdown);
+        // an immediate replay on every call made that a tight send-fail-resubscribe loop that
+        // logged gigabytes. Without a replay the stream just waits for live events.
+        let replay = if replay_due(&self.last_replay, now()) {
+            self.settled_withdrawal_events().map_err(backend_err)?
+        } else {
+            vec![]
+        };
         let events = futures::stream::unfold(rx, |mut rx| async move {
             loop {
                 match rx.recv().await {
@@ -517,5 +570,22 @@ impl MintPayment for ZecBackend {
             Some(w) => outgoing_response(&w),
             None => Err(Error::Custom(format!("unknown zec withdrawal {quote_id}"))),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn replay_is_rate_limited() {
+        let last = AtomicU64::new(0);
+        assert!(replay_due(&last, 1_000), "first subscription replays");
+        // A dropped connection re-subscribing in a loop gets no further replays...
+        for t in 1_000..1_000 + REPLAY_INTERVAL_SECS {
+            assert!(!replay_due(&last, t));
+        }
+        // ...until the interval has passed (e.g. the mint reconnects later).
+        assert!(replay_due(&last, 1_000 + REPLAY_INTERVAL_SECS));
     }
 }

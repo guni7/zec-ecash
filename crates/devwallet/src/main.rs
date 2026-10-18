@@ -1,14 +1,18 @@
 //! Local regtest "user" wallet for zec-ecash development. NOT for real funds.
 //!
-//!   cargo run -p devwallet -- new                     # create devnet/user-wallet.seed
+//!   cargo run -p devwallet -- new                     # create devnet/keys/user-wallet.seed
 //!   cargo run -p devwallet -- address                 # print the uregtest1... address
 //!   cargo run -p devwallet -- sync                    # scan to the chain tip
 //!   cargo run -p devwallet -- balance                 # sync, then spendable/pending per pool
 //!   cargo run -p devwallet -- send <address> <zats>   # sync, build, prove, sign, broadcast
 //!
 //! Global flags (before the command):
-//!   --seed <path>          default devnet/user-wallet.seed; the DB is the same path with
-//!                          .sqlite, so --seed devnet/mint-wallet.seed is a separate wallet
+//!   --seed <path>          default devnet/keys/user-wallet.seed (keys survive resets)
+//!   --db <path>            default devnet/<seed name>.sqlite (chain state, deleted by resets),
+//!                          so --seed devnet/keys/other.seed is a separate wallet
+//!   --ufvk <path>          open a view-only wallet instead, e.g. --ufvk devnet/keys/mint.ufvk
+//!                          for the mint reserve (balance/sync/address only; its own DB,
+//!                          default devnet/<ufvk name>-view.sqlite, never the processor's)
 //!   --lightwalletd <url>   default http://127.0.0.1:9067 (Zebra's built-in gRPC, plaintext)
 //!
 //! Put the user address in devnet/zebrad-regtest.toml [mining] miner_address so
@@ -18,24 +22,49 @@ use std::path::PathBuf;
 use anyhow::{Context, Result, bail};
 use zec_wallet::{PoolBalance, Wallet};
 
-const USAGE: &str = "usage: devwallet [--seed <path>] [--lightwalletd <url>] \
+const USAGE: &str = "usage: devwallet [--seed <path> | --ufvk <path>] [--db <path>] [--lightwalletd <url>] \
                      <new|address|sync|balance|send <address> <zats>>   (run from the zec-ecash folder)";
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    let mut seed_path = PathBuf::from("devnet/user-wallet.seed");
+    let mut seed_path = PathBuf::from("devnet/keys/user-wallet.seed");
+    let mut db_path: Option<PathBuf> = None;
+    let mut ufvk_path: Option<PathBuf> = None;
     let mut lightwalletd = "http://127.0.0.1:9067".to_owned();
     let mut cmd = vec![];
     let mut args = std::env::args().skip(1);
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--seed" => seed_path = args.next().context("--seed needs a path")?.into(),
+            "--db" => db_path = Some(args.next().context("--db needs a path")?.into()),
+            "--ufvk" => ufvk_path = Some(args.next().context("--ufvk needs a path")?.into()),
             "--lightwalletd" => lightwalletd = args.next().context("--lightwalletd needs a url")?,
             _ => cmd.push(arg),
         }
     }
-    let db_path = seed_path.with_extension("sqlite");
-    let open = || Wallet::open_or_create(&seed_path, &db_path, &lightwalletd);
+    // Wallet DBs hold chain state, so they live in devnet/, not next to the seed in devnet/keys/.
+    let db_path = db_path.unwrap_or_else(|| match &ufvk_path {
+        Some(u) => {
+            let name = u.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            PathBuf::from("devnet").join(format!("{name}-view.sqlite"))
+        }
+        None => {
+            let name = seed_path.file_stem().unwrap_or_default().to_string_lossy().into_owned();
+            PathBuf::from("devnet").join(format!("{name}.sqlite"))
+        }
+    });
+    let open = || async {
+        match &ufvk_path {
+            Some(u) => {
+                let ufvk = zec_wallet::frost::read_ufvk(u)?.encode(&zec_wallet::regtest::regtest_network());
+                Wallet::open_or_import_ufvk(&ufvk, &db_path, &lightwalletd).await
+            }
+            None => Wallet::open_or_create(&seed_path, &db_path, &lightwalletd).await,
+        }
+    };
+    if ufvk_path.is_some() && matches!(cmd.first().map(String::as_str), Some("new" | "send")) {
+        bail!("--ufvk wallets are view-only: no `new` or `send`");
+    }
 
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["new"] => {
@@ -43,6 +72,7 @@ async fn main() -> Result<()> {
             println!("Created {} (regtest only, keep it out of git)", seed_path.display());
             println!("{}", zec_wallet::seed_address(&seed_path)?);
         }
+        ["address"] if ufvk_path.is_some() => println!("{}", open().await?.address()?),
         ["address"] => println!("{}", zec_wallet::seed_address(&seed_path)?),
         ["sync"] => println!("synced to height {}", open().await?.sync().await?),
         ["balance"] => {

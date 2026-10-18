@@ -45,19 +45,36 @@ pub fn status_of(w: &Withdrawal) -> MeltQuoteState {
     }
 }
 
-/// Runs a withdrawal once. Idempotent: if the quote is already past UNPAID it returns the
-/// current row without building anything again.
+/// Runs a withdrawal to the end in one call: [`begin`] then [`complete`]. Idempotent: if the
+/// quote is already past UNPAID it returns the current row without building anything again.
+#[cfg(test)]
 pub async fn make_payment(
     store: &QuoteStore,
     reserve: &mut dyn Reserve,
     quote_id: &str,
     max_fee: Option<u64>,
 ) -> Result<Withdrawal> {
+    match begin(store, reserve, quote_id, max_fee)? {
+        Begun::Built(_) => complete(store, reserve, quote_id).await,
+        Begun::Existing(w) => Ok(w),
+    }
+}
+
+pub enum Begun {
+    /// This call built the PCZT (now BUILT); the caller must run [`complete`].
+    Built(Withdrawal),
+    /// Already past UNPAID: nothing was built, nothing more to do here.
+    Existing(Withdrawal),
+}
+
+/// First half, run inside `make_payment`: price again, reject a fee above `max_fee`, then build
+/// the PCZT and save it (UNPAID -> BUILT). From here on the withdrawal reports Pending.
+pub fn begin(store: &QuoteStore, reserve: &mut dyn Reserve, quote_id: &str, max_fee: Option<u64>) -> Result<Begun> {
     let Some(w) = store.withdrawal(quote_id)? else {
         bail!("unknown withdrawal quote {quote_id}");
     };
     if w.state != Unpaid {
-        return Ok(w);
+        return Ok(Begun::Existing(w));
     }
 
     // Price it again before building anything; the reserve's notes may have changed.
@@ -68,12 +85,25 @@ pub async fn make_payment(
     check_fee(built.fee, max_fee)?;
     if !store.mark_built(quote_id, &built.pczt, built.fee, built.expiry_height)? {
         // Someone else moved it on; report whatever it is now.
-        return store.withdrawal(quote_id)?.ok_or_else(|| anyhow::anyhow!("quote vanished"));
+        let w = store.withdrawal(quote_id)?.ok_or_else(|| anyhow::anyhow!("quote vanished"))?;
+        return Ok(Begun::Existing(w));
     }
+    Ok(Begun::Built(store.withdrawal(quote_id)?.ok_or_else(|| anyhow::anyhow!("quote vanished"))?))
+}
+
+/// Second half: sign (FROST guardians), prove, extract, save the txid (BROADCAST), send.
+/// Any failure before the txid is saved means nothing was sent: the row becomes FAILED and the
+/// error is returned (the caller tells the mint, which refunds).
+pub async fn complete(store: &QuoteStore, reserve: &mut dyn Reserve, quote_id: &str) -> Result<Withdrawal> {
+    let w = store.withdrawal(quote_id)?.ok_or_else(|| anyhow::anyhow!("unknown withdrawal quote {quote_id}"))?;
+    if w.state != Built {
+        return Ok(w);
+    }
+    let pczt = w.pczt_blob.clone().ok_or_else(|| anyhow::anyhow!("BUILT withdrawal has no PCZT"))?;
     store.transition(quote_id, &[Built], Signing)?;
 
     // Until the txid is saved, nothing can have been sent, so a failure here is final.
-    let txid = match sign_and_finalize(reserve, built.pczt, quote_id).await {
+    let txid = match sign_and_finalize(reserve, pczt, quote_id).await {
         Ok(txid) => txid,
         Err(e) => {
             store.transition(quote_id, &[Built, Signing], Failed)?;

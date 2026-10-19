@@ -1,0 +1,4 @@
+2026-10-18T16:59:54.454476Z  INFO guardian: guardian serving guardian=2 addr=127.0.0.1:7102 mint=http://127.0.0.1:8085 address=uregtest1yudx7s9mk0asg94z3zpg8x8fnnvez3rcfqzrs4deduq90gwdrc97fex6x9j3f4weyg4tr2rly6jkjfjr67ye5uqj9ryks5uf3chrx32v
+2026-10-18T17:29:49.664719Z  INFO guardian: round 1 session=a07efd199e98cb87e14b6f58df41f82b quote_id=01a15010-02d7-749c-a170-90bef39c7943 actions=1
+2026-10-18T17:29:49.793336Z  INFO guardian: round 2: signed session=a07efd199e98cb87e14b6f58df41f82b quote_id=01a15010-02d7-749c-a170-90bef39c7943 shares=1
+2026-10-18T19:42:54.876346Z  INFO guardian: guardian serving guardian=2 addr=127.0.0.1:7102 mint=http://127.0.0.1:8085 address=uregtest1yudx7s9mk0asg94z3zpg8x8fnnvez3rcfqzrs4deduq90gwdrc97fex6x9j3f4weyg4tr2rly6jkjfjr67ye5uqj9ryks5uf3chrx32v

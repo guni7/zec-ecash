@@ -73,6 +73,36 @@ Both are demo wallets for this regtest devnet. Don't use real funds.
     cargo run -p zec-ecash-cli -- --wallet bob receive <token>
     cargo run -p zec-ecash-cli -- --wallet bob pubkey      # P2PK key (derived from the seed)
     cargo run -p zec-ecash-cli -- send 5000 --lock <bob's pubkey>   # only bob can redeem it
+    cargo run -p zec-ecash-cli -- send 3000 --dleq        # keep DLEQ proofs (default is compact)
+    cargo run -p zec-ecash-cli -- --wallet bob check <token>   # offline: verify every proof's DLEQ
+    cargo run -p zec-ecash-cli -- pay <creqA...>          # pay a NUT-18 request (point of sale)
+    cargo run -p zec-ecash-cli -- consolidate             # swap all proofs into the minimal set
+    cargo run -p zec-ecash-cli -- pending                 # your tokens nobody redeemed yet
+    cargo run -p zec-ecash-cli -- reclaim <id>            # take one back (voids that token)
+
+Wallets keep the minimal set of proofs (powers of two) for every mint, swap, send and receive,
+so a token holds one proof per set bit of its amount: 3000 zat = 7 proofs, about 1,160
+characters compact (the default) or 2,170 with DLEQ proofs (`--dleq`). The web page does the
+same; its "Compact token" box is on by default. P2PK-locked sends (`--lock`) always include
+DLEQ proofs, because the receiver needs them to accept the token offline.
+
+**Safe offline receive.** Without the mint a receiver can't know a token is unspent, unless
+nobody else *can* spend it. So a token is accepted offline only if every proof is P2PK-locked to
+the receiver's key (no refund/locktime/multisig escape hatch) and every proof's DLEQ proof checks
+out against mint keys cached while online. `check <token>` does this in the CLI; the web page
+shows its own key as a QR ("Receive offline"), and when it scans a token with no network it
+runs the same checks, shows "accepted offline, will redeem when online", and redeems the token
+automatically (signing with its key) once the mint is reachable. Compact tokens and unlocked
+tokens are refused offline, with the reason.
+
+**Point of sale (NUT-18).** `crates/pos` (port of thesimplekid/cashu-payment-backend, see its
+header for the fixes) serves `GET /create?amount=&unit=zat`, `GET /check/{id}` and
+`POST /payment` on 127.0.0.1:8090, proxied as `https://<host>:5173/pos`. Its wallet needs
+`zec-ecash-cli --wallet pos init` once; `devnet-up.sh` then starts it. The page's "Request
+payment" card creates a request, shows its QR and polls until PAID; `zec-ecash-cli pay <creqA>`
+pays one, locking the proofs to the POS key with a refund to the payer after 15 minutes
+(`--refund-after`), so a refused payment can be taken back with `receive <token>` later. Start with `source scripts/env.sh` so the CLI uses the
+same mint URL as the phone.
 
 `--wallet <name>` (default `ecash`) uses `devnet/keys/<name>-wallet.seed` and
 `devnet/<name>-wallet.redb`. The mint URL comes from `ZEC_MINT_URL` (or `--mint`), and the
@@ -108,7 +138,8 @@ stable hostname for `<host>`: this Mac's mDNS name doesn't change when the netwo
    `set-mint-host.sh` only reissues the leaf certificate from that same root, and refuses to run
    if mkcert's root doesn't match `web/certs/rootCA.pem`. So the root installed on the phone stays
    valid across hostname and IP changes.
-4. On the phone, open `https://<LocalHostName>.local:5173`. The green dot means
+4. In each terminal you use for the CLI, run `source scripts/env.sh`.
+5. On the phone, open `https://<LocalHostName>.local:5173`. The green dot means
    `/mint/v1/info` loaded; "Scan QR" asks for the camera (it only works over HTTPS).
    `scripts/devnet-up.sh status` checks that the web URL reaches the mint.
 
@@ -152,6 +183,15 @@ theirs are missing. Everything else in `devnet/` is chain or mint state and may 
     scripts/guardians stop 3        # stop/start single guardians (start 3 to bring it back)
     scripts/devnet-reset.sh         # stop everything, delete chain + mint state, keep devnet/keys
     scripts/devnet-reset.sh --new-keys   # also new FROST keys, mint.ufvk and wallet seeds (asks first)
+
+Shell environment: `source scripts/env.sh` exports `.env` (CDK_MINTD_MNEMONIC, ZEC_MINT_URL,
+ZEC_MINT_CA with an absolute path) into your shell and fails loudly if the mint URL or CA is
+missing. The CLI also reads `.env` from the repo root, but warns when `ZEC_MINT_URL` is unset.
+
+Logs live in `devnet/logs/`. zec-processor, the guardians and the CLI rotate their own logs at
+10 MB (5 old files kept). zebrad, cdk-mintd and the web server append to `devnet/logs/*.log`,
+which `scripts/log-trim.sh` (started by `devnet-up.sh`, checked by `status`) cuts back to the
+last 2 MB once a file passes 20 MB; it also keeps only 7 of cdk-mintd's daily files.
 
 `devnet-reset.sh` deletes `devnet/zebra-state`, `devnet/mint` (cdk-mintd's work dir), every wallet
 DB (`devnet/*.sqlite`, `devnet/*.redb`), the processor DB, `guardian-*.signed.json` (per-quote state

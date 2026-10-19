@@ -14,11 +14,15 @@ import {
 } from '@cashu/cashu-ts';
 import QRCode from 'qrcode';
 import QrScanner from 'qr-scanner';
+import { loadOrCreateKey, loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
 
 const UNIT = 'zat';
 const MINT_URL = `${location.origin}/mint`;
 const STORE_KEY = `zec-ecash-demo:proofs:${MINT_URL}`;
 const SENT_KEY = `zec-ecash-demo:last-sent:${MINT_URL}`;
+const P2PK_KEY = `zec-ecash-demo:p2pk-key:${MINT_URL}`;
+const KEYCHAIN_KEY = `zec-ecash-demo:keychain:${MINT_URL}`;
+const PENDING_KEY = `zec-ecash-demo:offline-received:${MINT_URL}`;
 /** NUT error code the mint returns for a proof that was already spent. */
 const ALREADY_SPENT = 11001;
 
@@ -35,11 +39,22 @@ const els = {
   scanStop: $<HTMLButtonElement>('scan-stop'),
   sendAmount: $<HTMLInputElement>('send-amount'),
   sendBtn: $<HTMLButtonElement>('send-btn'),
+  sendCompact: $<HTMLInputElement>('send-compact'),
   sent: $('sent'),
   sentQr: $<HTMLCanvasElement>('sent-qr'),
   sentToken: $<HTMLTextAreaElement>('sent-token'),
   sentNote: $('sent-note'),
   copyBtn: $<HTMLButtonElement>('copy-btn'),
+  myQr: $<HTMLCanvasElement>('my-pubkey-qr'),
+  myPub: $<HTMLTextAreaElement>('my-pubkey'),
+  pending: $('pending'),
+  reqAmount: $<HTMLInputElement>('req-amount'),
+  reqBtn: $<HTMLButtonElement>('req-btn'),
+  req: $('req'),
+  reqQr: $<HTMLCanvasElement>('req-qr'),
+  reqText: $<HTMLTextAreaElement>('req-text'),
+  reqCopy: $<HTMLButtonElement>('req-copy'),
+  reqState: $('req-state'),
   message: $('message'),
 };
 
@@ -61,6 +76,9 @@ function saveProofs(proofs: Proof[]) {
 
 let proofs: Proof[] = loadProofs();
 let wallet: Wallet | null = null;
+/** This wallet's P2PK key: senders lock tokens to the public half, so they're safe to accept offline. */
+const me = loadOrCreateKey(P2PK_KEY);
+let pending: PendingReceipt[] = loadPending(PENDING_KEY);
 
 // ---- UI helpers ----
 
@@ -71,6 +89,21 @@ function say(text: string, kind: 'ok' | 'bad' | '' = '') {
 
 function renderBalance() {
   els.balance.textContent = Amount.sum(proofs.map((p) => p.amount)).toString();
+  const waiting = pending.reduce((a, p) => a + p.amount, 0);
+  els.pending.hidden = pending.length === 0;
+  els.pending.textContent = `+ ${waiting} ${UNIT} accepted offline (${pending.length} token${pending.length === 1 ? '' : 's'}), will redeem when online`;
+}
+
+function isNetworkError(e: unknown) {
+  return !navigator.onLine || e instanceof NetworkError || e instanceof TypeError;
+}
+
+function cachedKeychain() {
+  try {
+    return JSON.parse(localStorage.getItem(KEYCHAIN_KEY) ?? 'null');
+  } catch {
+    return null;
+  }
 }
 
 function normalizeMint(url: string) {
@@ -107,8 +140,12 @@ async function busy<T>(button: HTMLButtonElement, work: () => Promise<T>): Promi
 
 async function connect(): Promise<Wallet> {
   if (wallet) return wallet;
-  const w = new Wallet(MINT_URL, { unit: UNIT });
+  // denominationTarget 0: split every mint/swap/receive/send into the minimal powers of two
+  // (cashu-ts defaults to keeping 3 proofs of each denomination, which bloats tokens and QRs).
+  const w = new Wallet(MINT_URL, { unit: UNIT, denominationTarget: 0 });
   await w.loadMint();
+  // Keep the mint's keys for offline DLEQ checks (verifyOffline).
+  localStorage.setItem(KEYCHAIN_KEY, JSON.stringify(w.keyChain.cache));
   wallet = w;
   return w;
 }
@@ -125,6 +162,7 @@ async function checkMint() {
       say(`Opened via ${location.hostname}: tokens will name ${MINT_URL}, which the phone and CLI don't use. Open the LAN address instead.`, 'bad');
     }
     await connect();
+    await redeemPending();
   } catch (e) {
     els.mintStatus.className = 'dot bad';
     els.mintLine.textContent = `mint unreachable · ${MINT_URL}`;
@@ -147,13 +185,61 @@ async function receive(token: string) {
   if (normalizeMint(meta.mint) !== normalizeMint(MINT_URL)) {
     throw new Error(`Wrong mint: this token is from ${meta.mint}; this wallet uses ${MINT_URL}.`);
   }
-  const w = await connect();
-  const received = await w.receive(token);
+  let received: Proof[];
+  try {
+    const w = await connect();
+    // privkey: signs for proofs P2PK-locked to this wallet (ignored for unlocked ones).
+    received = await w.receive(token, { privkey: me.priv });
+  } catch (e) {
+    if (isNetworkError(e)) return acceptOffline(token);
+    throw e;
+  }
   proofs = [...proofs, ...received];
   saveProofs(proofs);
   renderBalance();
   els.receiveInput.value = '';
   say(`Received ${Amount.sum(received.map((p) => p.amount)).toString()} ${UNIT} (redeemed at mint).`, 'ok');
+}
+
+/** No mint: accept only what verifyOffline proves safe, and queue it for redemption. */
+function acceptOffline(token: string) {
+  const verdict = verifyOffline(token, cachedKeychain(), MINT_URL, UNIT, me.pub);
+  if (!verdict.ok) throw new Error(`Offline, not accepted: ${verdict.reason}`);
+  if (pending.some((p) => p.token === token)) throw new Error('This token is already waiting to be redeemed.');
+  pending = [...pending, { token, amount: verdict.amount, at: Date.now() }];
+  savePending(PENDING_KEY, pending);
+  renderBalance();
+  els.receiveInput.value = '';
+  say(`Accepted offline: ${verdict.amount} ${UNIT}, locked to this wallet with valid mint signatures. Will redeem when online.`, 'ok');
+}
+
+let redeeming = false;
+
+/** Redeems queued offline receipts; keeps them queued while the mint is unreachable. */
+async function redeemPending() {
+  if (redeeming || pending.length === 0) return;
+  redeeming = true;
+  try {
+    const w = await connect();
+    for (const p of [...pending]) {
+      try {
+        const got = await w.receive(p.token, { privkey: me.priv });
+        proofs = [...proofs, ...got];
+        saveProofs(proofs);
+        say(`Redeemed ${p.amount} ${UNIT} accepted offline.`, 'ok');
+      } catch (e) {
+        if (isNetworkError(e)) return; // still offline: try again later
+        say(`An offline-accepted token could not be redeemed: ${explain(e)}`, 'bad');
+      }
+      pending = pending.filter((q) => q.token !== p.token);
+      savePending(PENDING_KEY, pending);
+      renderBalance();
+    }
+  } catch {
+    /* mint unreachable: keep the queue */
+  } finally {
+    redeeming = false;
+  }
 }
 
 // ---- send ----
@@ -168,9 +254,10 @@ async function send(amountText: string) {
   proofs = keep;
   saveProofs(proofs);
   renderBalance();
-  const token = getEncodedToken({ mint: MINT_URL, unit: UNIT, proofs: out });
+  // Compact drops the DLEQ proofs (NUT-12): about half the size, but no offline check for the receiver.
+  const token = getEncodedToken({ mint: MINT_URL, unit: UNIT, proofs: out }, { removeDleq: els.sendCompact.checked });
   localStorage.setItem(SENT_KEY, token);
-  await showSent(token, `${amount} ${UNIT}`);
+  await showSent(token, `${amount} ${UNIT} · ${out.length} proofs · ${token.length} chars`);
   say(`Created a ${amount} ${UNIT} token. It's spendable by whoever has it: hand it over now.`, 'ok');
 }
 
@@ -185,6 +272,47 @@ async function showSent(token: string, note: string) {
     els.sentQr.hidden = true;
     els.sentNote.textContent = `${note} · too long for one QR code, copy the text`;
   }
+}
+
+// ---- point of sale (NUT-18) ----
+
+const POS_URL = `${location.origin}/pos`;
+let reqPoll: ReturnType<typeof setInterval> | null = null;
+
+async function createRequest(amountText: string) {
+  const amount = Number(amountText);
+  if (!Number.isInteger(amount) || amount <= 0) throw new Error('Enter a whole number of zat.');
+  let res: Response;
+  try {
+    res = await fetch(`${POS_URL}/create?amount=${amount}&unit=${UNIT}`);
+  } catch {
+    throw new Error(`Point of sale unreachable at ${POS_URL} (is crates/pos running? scripts/devnet-up.sh status).`);
+  }
+  const body = (await res.json()) as { id?: string; request?: string; error?: string };
+  if (!res.ok || !body.id || !body.request) throw new Error(`Point of sale: ${body.error ?? res.status}`);
+  els.req.hidden = false;
+  els.reqText.value = body.request;
+  els.reqState.textContent = `${amount} ${UNIT} · waiting for payment…`;
+  els.reqState.className = 'muted';
+  await QRCode.toCanvas(els.reqQr, body.request, { errorCorrectionLevel: 'L', margin: 1, width: 300 });
+  if (reqPoll) clearInterval(reqPoll);
+  const id = body.id;
+  reqPoll = setInterval(async () => {
+    try {
+      const r = await fetch(`${POS_URL}/check/${id}`);
+      const q = (await r.json()) as { state?: string; received?: number };
+      if (q.state === 'PAID') {
+        els.reqState.textContent = `PAID · ${q.received} ${UNIT} received`;
+        els.reqState.className = 'message ok';
+        if (reqPoll) clearInterval(reqPoll);
+      } else if (q.state) {
+        els.reqState.textContent = `${amount} ${UNIT} · ${q.state.toLowerCase()}…`;
+      }
+    } catch {
+      /* transient; keep polling */
+    }
+  }, 2000);
+  say('Request created: have the payer scan it (e.g. zec-ecash-cli pay <request>).', 'ok');
 }
 
 // ---- camera ----
@@ -222,6 +350,15 @@ els.receiveBtn.onclick = () => void busy(els.receiveBtn, () => receive(els.recei
 els.scanBtn.onclick = () => void startScan();
 els.scanStop.onclick = () => stopScan();
 els.sendBtn.onclick = () => void busy(els.sendBtn, () => send(els.sendAmount.value));
+els.reqBtn.onclick = () => void busy(els.reqBtn, () => createRequest(els.reqAmount.value));
+els.reqCopy.onclick = async () => {
+  try {
+    await navigator.clipboard.writeText(els.reqText.value);
+    say('Request copied.', 'ok');
+  } catch {
+    els.reqText.select();
+  }
+};
 els.copyBtn.onclick = async () => {
   try {
     await navigator.clipboard.writeText(els.sentToken.value);
@@ -232,7 +369,22 @@ els.copyBtn.onclick = async () => {
   }
 };
 
+// Offline shell (public/sw.js): lets the page open with no network, for offline receive.
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('service worker:', e));
+}
+// Load the QR decoder's worker now, while online, so scanning also works offline (the service
+// worker caches it).
+void QrScanner.scanImage(document.createElement('canvas'), { returnDetailedScanResult: true }).catch(() => {});
+
+window.addEventListener('online', () => void checkMint());
+setInterval(() => {
+  if (pending.length > 0) void redeemPending();
+}, 15_000);
+
 renderBalance();
+els.myPub.value = me.pub;
+void QRCode.toCanvas(els.myQr, me.pub, { errorCorrectionLevel: 'L', margin: 1, width: 220 });
 const lastSent = localStorage.getItem(SENT_KEY);
 if (lastSent) void showSent(lastSent, 'last token you created');
 void checkMint();

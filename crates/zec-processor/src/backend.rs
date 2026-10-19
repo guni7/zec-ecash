@@ -14,9 +14,9 @@ use std::{
     pin::Pin,
     sync::{
         Arc,
-        atomic::{AtomicBool, AtomicU64, Ordering},
+        atomic::{AtomicBool, Ordering},
     },
-    time::{SystemTime, UNIX_EPOCH},
+    time::{Duration, SystemTime, UNIX_EPOCH},
 };
 
 use async_trait::async_trait;
@@ -52,8 +52,8 @@ pub struct ZecBackend {
     signer: Arc<dyn Signer>,
     events: broadcast::Sender<Event>,
     stream_active: Arc<AtomicBool>,
-    /// Unix time of the last settled-withdrawal replay (see `wait_payment_event`).
-    last_replay: AtomicU64,
+    /// Lifetimes of the event streams handed to the mint (see `wait_payment_event`).
+    streams: Arc<std::sync::Mutex<StreamHealth>>,
     cancel_stream: Arc<Notify>,
     sync_task: std::sync::Mutex<Option<JoinHandle<()>>>,
 }
@@ -67,7 +67,7 @@ impl ZecBackend {
             signer,
             events: broadcast::channel(1024).0,
             stream_active: Arc::new(AtomicBool::new(false)),
-            last_replay: AtomicU64::new(0),
+            streams: Arc::new(std::sync::Mutex::new(StreamHealth::default())),
             cancel_stream: Arc::new(Notify::new()),
             sync_task: std::sync::Mutex::new(None),
         }
@@ -348,14 +348,59 @@ fn backend_err(e: anyhow::Error) -> Error {
     Error::Anyhow(e)
 }
 
-/// Minimum time between settled-withdrawal replays.
-const REPLAY_INTERVAL_SECS: u64 = 60;
+/// A stream that ends sooner than this after it started counts as failed: the mint's side of
+/// the connection is gone and cdk-payment-processor's server is just resubscribing.
+const STREAM_HEALTHY_AFTER: Duration = Duration::from_secs(5);
+/// Upper bound for the delay before a failing stream's next attempt.
+const STREAM_BACKOFF_CAP: Duration = Duration::from_secs(60);
 
-/// True (and records `now`) if no replay happened in the last [`REPLAY_INTERVAL_SECS`].
-fn replay_due(last: &AtomicU64, now: u64) -> bool {
-    let prev = last.load(Ordering::SeqCst);
-    now.saturating_sub(prev) >= REPLAY_INTERVAL_SECS
-        && last.compare_exchange(prev, now, Ordering::SeqCst, Ordering::SeqCst).is_ok()
+/// Why this exists: cdk-payment-processor's server keeps calling `wait_payment_event` for a
+/// connection the mint dropped (it only stops on shutdown). Whatever the stream yields at once
+/// fails to send, the server drops the stream and asks again. With an immediate replay that was a
+/// tight loop (it logged 10 GB). So: replay only on a genuinely new stream (the first, or after a
+/// stream that stayed up), and delay a failing stream exponentially, capped.
+#[derive(Debug, Default)]
+struct StreamHealth {
+    /// Consecutive streams that ended within STREAM_HEALTHY_AFTER.
+    failures: u32,
+}
+
+impl StreamHealth {
+    /// Called when a stream ends after `lived`.
+    fn ended(&mut self, lived: Duration) {
+        if lived < STREAM_HEALTHY_AFTER {
+            self.failures = self.failures.saturating_add(1);
+        } else {
+            self.failures = 0;
+        }
+    }
+
+    /// For a new stream: (replay settled withdrawals?, delay before yielding anything).
+    fn plan(&self) -> (bool, Duration) {
+        if self.failures == 0 {
+            (true, Duration::ZERO)
+        } else {
+            let secs = 1u64 << (self.failures - 1).min(6);
+            (false, Duration::from_secs(secs).min(STREAM_BACKOFF_CAP))
+        }
+    }
+}
+
+/// Records the stream's lifetime when the mint side drops it.
+struct StreamGuard {
+    started: std::time::Instant,
+    health: Arc<std::sync::Mutex<StreamHealth>>,
+}
+
+impl Drop for StreamGuard {
+    fn drop(&mut self) {
+        let lived = self.started.elapsed();
+        let mut h = self.health.lock().unwrap();
+        h.ended(lived);
+        if h.failures == 1 || h.failures.is_power_of_two() {
+            tracing::debug!(failures = h.failures, ?lived, "payment event stream ended early; backing off");
+        }
+    }
 }
 
 fn now() -> u64 {
@@ -482,15 +527,10 @@ impl MintPayment for ZecBackend {
     ) -> Result<Pin<Box<dyn Stream<Item = Event> + Send>>, Self::Err> {
         // Subscribe before reading the store so nothing settled in between is missed.
         let rx = self.events.subscribe();
-        // Replay at most once per REPLAY_INTERVAL. cdk-payment-processor's server keeps calling
-        // wait_payment_event for a connection the mint has dropped (it only stops on shutdown);
-        // an immediate replay on every call made that a tight send-fail-resubscribe loop that
-        // logged gigabytes. Without a replay the stream just waits for live events.
-        let replay = if replay_due(&self.last_replay, now()) {
-            self.settled_withdrawal_events().map_err(backend_err)?
-        } else {
-            vec![]
-        };
+        // Replay only on a genuinely new stream; back off when streams keep dying (StreamHealth).
+        let (replay, delay) = self.streams.lock().unwrap().plan();
+        let replay = if replay { self.settled_withdrawal_events().map_err(backend_err)? } else { vec![] };
+        let guard = StreamGuard { started: std::time::Instant::now(), health: self.streams.clone() };
         let events = futures::stream::unfold(rx, |mut rx| async move {
             loop {
                 match rx.recv().await {
@@ -506,8 +546,17 @@ impl MintPayment for ZecBackend {
         let cancel = self.cancel_stream.clone();
         let active = self.stream_active.clone();
         active.store(true, Ordering::SeqCst);
-        let stream = futures::stream::iter(replay)
-            .chain(events)
+        let stream = futures::stream::once(async move {
+            tokio::time::sleep(delay).await;
+        })
+        .filter_map(|()| async { None })
+        .chain(futures::stream::iter(replay))
+        .chain(events)
+        // The guard lives as long as the stream; dropping the stream records its lifetime.
+        .map(move |e| {
+            let _ = &guard;
+            e
+        })
             .take_until(async move { cancel.notified().await })
             .chain(futures::stream::once(async move {
                 active.store(false, Ordering::SeqCst);
@@ -578,14 +627,22 @@ mod tests {
     use super::*;
 
     #[test]
-    fn replay_is_rate_limited() {
-        let last = AtomicU64::new(0);
-        assert!(replay_due(&last, 1_000), "first subscription replays");
-        // A dropped connection re-subscribing in a loop gets no further replays...
-        for t in 1_000..1_000 + REPLAY_INTERVAL_SECS {
-            assert!(!replay_due(&last, t));
+    fn replay_only_on_new_streams_and_backoff_is_capped() {
+        let mut h = StreamHealth::default();
+        assert_eq!(h.plan(), (true, Duration::ZERO), "first stream replays at once");
+
+        // A dropped connection: every stream dies immediately.
+        let mut delays = vec![];
+        for _ in 0..10 {
+            h.ended(Duration::from_millis(1));
+            let (replay, delay) = h.plan();
+            assert!(!replay, "no replay into a failing connection");
+            delays.push(delay.as_secs());
         }
-        // ...until the interval has passed (e.g. the mint reconnects later).
-        assert!(replay_due(&last, 1_000 + REPLAY_INTERVAL_SECS));
+        assert_eq!(delays, [1, 2, 4, 8, 16, 32, 60, 60, 60, 60]);
+
+        // A stream that stays up resets it: the next one is new again.
+        h.ended(STREAM_HEALTHY_AFTER);
+        assert_eq!(h.plan(), (true, Duration::ZERO));
     }
 }

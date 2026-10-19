@@ -1,0 +1,20 @@
+[package]
+name = "pos"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+cdk.workspace = true
+cdk-redb.workspace = true
+cdk-common.workspace = true
+axum.workspace = true
+tokio.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+rusqlite.workspace = true
+hex.workspace = true
+rand.workspace = true
+anyhow.workspace = true
+tracing.workspace = true
+bitreq.workspace = true
+devlog = { path = "../devlog" }

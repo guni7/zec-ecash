@@ -4,9 +4,16 @@
 //!   zec-ecash-cli deposit <zat>                # quote, print address, wait for PAID, mint
 //!   zec-ecash-cli mint <quote_id>              # finish an already-paid quote
 //!   zec-ecash-cli balance                      # ecash balance in zat
-//!   zec-ecash-cli send <zat> [--lock <pubkey>] # cashuB token (+ terminal QR), optionally P2PK-locked
+//!   zec-ecash-cli send <zat> [--lock <pubkey>] [--dleq]
+//!                                              # cashuB token + terminal QR. Compact (no DLEQ) by
+//!                                              # default; --dleq keeps it; --lock (P2PK) always does
+//!   zec-ecash-cli check <token>                # offline: DLEQ of every proof vs cached mint keys
+//!   zec-ecash-cli pay <creqA...>               # pay a NUT-18 request over its HTTP transport
 //!   zec-ecash-cli receive <token>              # redeem a token at the mint
 //!   zec-ecash-cli pubkey                       # this wallet's P2PK public key (from its seed)
+//!   zec-ecash-cli consolidate                  # swap all proofs into the minimal set
+//!   zec-ecash-cli pending                      # tokens you sent that nobody redeemed yet
+//!   zec-ecash-cli reclaim <id>                 # take one of those back (voids that token)
 //!   zec-ecash-cli withdraw <zat> <uregtest1...>   # melt ecash to a ZEC address
 //!
 //! Global flags (before the command), each also settable in the environment or `.env`:
@@ -56,15 +63,19 @@ struct Opts {
     wallet: String,
     mint_url: String,
     mint_ca: Option<PathBuf>,
+    /// ZEC_MINT_URL was not set (env, .env) and no --mint: using the built-in default.
+    mint_url_defaulted: bool,
     cmd: Vec<String>,
 }
 
 fn parse_opts() -> Result<Opts> {
     let dotenv = tokens::read_dotenv(Path::new(".env"));
     let env = |k: &str| std::env::var(k).ok().or_else(|| dotenv.get(k).cloned());
+    let configured_url = env("ZEC_MINT_URL").filter(|v| !v.is_empty());
     let mut o = Opts {
         wallet: "ecash".into(),
-        mint_url: env("ZEC_MINT_URL").unwrap_or_else(|| "http://127.0.0.1:8085".into()),
+        mint_url_defaulted: configured_url.is_none(),
+        mint_url: configured_url.unwrap_or_else(|| "http://127.0.0.1:8085".into()),
         mint_ca: env("ZEC_MINT_CA").filter(|v| !v.is_empty()).map(PathBuf::from),
         cmd: vec![],
     };
@@ -72,7 +83,10 @@ fn parse_opts() -> Result<Opts> {
     while let Some(arg) = args.next() {
         match arg.as_str() {
             "--wallet" => o.wallet = args.next().context("--wallet needs a name")?,
-            "--mint" => o.mint_url = args.next().context("--mint needs a url")?,
+            "--mint" => {
+                o.mint_url = args.next().context("--mint needs a url")?;
+                o.mint_url_defaulted = false;
+            }
             "--mint-ca" => o.mint_ca = Some(args.next().context("--mint-ca needs a file")?.into()),
             _ => o.cmd.push(arg),
         }
@@ -100,11 +114,20 @@ fn main() -> Result<()> {
 }
 
 async fn run(opts: Opts) -> Result<()> {
+    // CDK's own log lines go to a size-capped file, not the terminal (devlog crate).
+    let _ = devlog::init(Path::new("devnet/logs"), "cli", "warn");
     let seed_path = PathBuf::from(format!("devnet/keys/{}-wallet.seed", opts.wallet));
     let db_path = PathBuf::from(format!("devnet/{}-wallet", opts.wallet));
     let cmd = opts.cmd;
     if cmd.first().map(String::as_str) == Some("init") {
         return init_seed(&seed_path);
+    }
+    if opts.mint_url_defaulted {
+        eprintln!(
+            "warning: ZEC_MINT_URL is not set; using {} (tokens from the phone name a different \
+             URL and won't match). Run `source scripts/env.sh` or pass --mint.",
+            opts.mint_url
+        );
     }
     let seed = read_seed(&seed_path)?;
     if cmd.first().map(String::as_str) == Some("pubkey") {
@@ -113,7 +136,46 @@ async fn run(opts: Opts) -> Result<()> {
     }
     let wallet = open_wallet(&opts.mint_url, &db_path, seed)
         .with_context(|| format!("wallet `{}` at {}", opts.wallet, opts.mint_url))?;
-    sync_keysets(&wallet).await?;
+    // `check` is offline: no keyset refresh, only what the wallet DB has cached.
+    if let ["check", token] = cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        let me = tokens::p2pk_key(&seed)?.public_key();
+        let results = tokens::check(&wallet, token).await?;
+        let mut all_ok = true;
+        for (i, r) in results.iter().enumerate() {
+            let lock = match &r.lock {
+                None => "not locked".to_owned(),
+                Some((pk, extra)) => format!(
+                    "P2PK-locked to {}{}",
+                    if *pk == me { "this wallet".to_owned() } else { pk.to_string() },
+                    if *extra { " + extra conditions" } else { "" }
+                ),
+            };
+            match &r.dleq {
+                Ok(()) => println!("proof {i}: {:>6} zat  keyset {}  DLEQ pass  {lock}", r.amount, r.keyset),
+                Err(e) => {
+                    all_ok = false;
+                    println!("proof {i}: {:>6} zat  keyset {}  DLEQ FAIL ({e})  {lock}", r.amount, r.keyset)
+                }
+            }
+        }
+        let total: u64 = results.iter().map(|r| r.amount).sum();
+        if all_ok {
+            println!("all {} proofs carry a valid mint signature (offline check): {total} zat", results.len());
+            return Ok(());
+        }
+        bail!("token failed the offline check: don't accept it without redeeming it online");
+    }
+    sync_keysets(&wallet).await.map_err(|e| {
+        let hint = if opts.mint_url_defaulted {
+            "\nZEC_MINT_URL is not set, so the default was used. Run `source scripts/env.sh` \
+             (or pass --mint <url>)."
+        } else if opts.mint_url.starts_with("https") && opts.mint_ca.is_none() {
+            "\nFor an https mint with a local CA, set ZEC_MINT_CA (`source scripts/env.sh`)."
+        } else {
+            ""
+        };
+        e.context(format!("cannot load keysets from {}{hint}", opts.mint_url))
+    })?;
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["deposit", zats] => {
             let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
@@ -159,12 +221,22 @@ async fn run(opts: Opts) -> Result<()> {
         }
         ["send", zats, rest @ ..] => {
             let zats: u64 = zats.parse().context("<zat> must be a whole number")?;
-            let lock = match rest {
-                [] => None,
-                ["--lock", pk] => Some(pk.parse().map_err(|e| anyhow::anyhow!("--lock needs a P2PK public key (hex): {e}"))?),
-                _ => bail!("usage: send <zat> [--lock <pubkey>]"),
-            };
-            let token = tokens::send(&wallet, zats, lock).await?;
+            let mut lock = None;
+            // Compact (no DLEQ) is the default for ordinary sends; locked sends always keep DLEQ.
+            let mut compact = true;
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match *a {
+                    "--lock" => {
+                        let pk = it.next().context("--lock needs a P2PK public key (hex)")?;
+                        lock = Some(pk.parse().map_err(|e| anyhow::anyhow!("--lock needs a P2PK public key (hex): {e}"))?);
+                    }
+                    "--compact" => compact = true,
+                    "--dleq" => compact = false,
+                    _ => bail!("usage: send <zat> [--lock <pubkey>] [--dleq]"),
+                }
+            }
+            let token = tokens::send(&wallet, zats, lock, compact).await?;
             println!("{token}");
             tokens::print_qr(&token);
             println!("sent {zats} zat{}; balance {} zat", if lock.is_some() { " (P2PK-locked)" } else { "" }, u64::from(wallet.total_balance().await?));
@@ -174,10 +246,55 @@ async fn run(opts: Opts) -> Result<()> {
             println!("received {received} zat (redeemed at mint)");
             println!("balance {} zat", u64::from(wallet.total_balance().await?));
         }
+        ["pay", request, rest @ ..] => {
+            let mut amount = None;
+            let mut refund_after = 900;
+            let mut it = rest.iter();
+            while let Some(a) = it.next() {
+                match *a {
+                    "--amount" => amount = Some(it.next().context("--amount <zat>")?.parse().context("--amount must be a number")?),
+                    "--refund-after" => refund_after = it.next().context("--refund-after <secs>")?.parse().context("--refund-after must be seconds")?,
+                    _ => bail!("usage: pay <creqA...> [--amount <zat>] [--refund-after <secs>]"),
+                }
+            }
+            let paid = tokens::pay(&wallet, &seed, request, amount, refund_after).await?;
+            if (200..300).contains(&paid.status) {
+                println!("paid {} zat to {}: {}", paid.amount, paid.target, paid.body);
+            } else {
+                println!("payment refused ({}): {}", paid.status, paid.body);
+                if let Some(at) = paid.refund_at {
+                    println!(
+                        "Your {} zat are locked to the receiver with a refund to you after unix time {at}; \
+                         recover them then with: zec-ecash-cli receive <token>",
+                        paid.amount
+                    );
+                }
+                println!("token: {}", paid.token);
+                bail!("not paid");
+            }
+        }
+        ["pending"] => {
+            let sends = tokens::pending_sends(&wallet).await?;
+            if sends.is_empty() {
+                println!("no unredeemed tokens");
+            }
+            for (id, amount, created, token) in sends {
+                println!("{id}  {amount} zat  created {created}\n  {token}");
+            }
+        }
+        ["reclaim", id] => {
+            let amount = tokens::reclaim(&wallet, id).await?;
+            println!("reclaimed {amount} zat; balance {} zat", u64::from(wallet.total_balance().await?));
+        }
+        ["consolidate"] => {
+            let (before, after, total) = tokens::consolidate(&wallet).await?;
+            println!("{before} proofs -> {after} proofs; balance {total} zat");
+        }
         ["balance"] => println!("{} zat", u64::from(wallet.total_balance().await?)),
         _ => bail!(
             "usage: zec-ecash-cli [--wallet <name>] [--mint <url>] [--mint-ca <pem>] \
-             <init|deposit <zats>|mint <quote_id>|withdraw <zats> <address>|balance>"
+             <init|deposit <zat>|mint <quote_id>|send <zat> [--lock <pubkey>] [--dleq]|receive <token>|check <token>|\
+             pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance>"
         ),
     }
     Ok(())
@@ -349,5 +466,8 @@ fn read_seed(seed_path: &Path) -> Result<[u8; 64]> {
 /// Opens the CDK wallet at `<path>.redb`.
 fn open_wallet(mint_url: &str, path: &Path, seed: [u8; 64]) -> Result<Wallet> {
     let db = WalletRedbDatabase::new(&path.with_extension("redb"))?;
-    Ok(Wallet::new(mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, None)?)
+    // target_proof_count 0: no "keep N proofs of every denomination" refill. cdk's default (3)
+    // turned a 50,000 zat mint into 48 proofs; with 0 every mint, swap, receive and send splits
+    // amounts into the minimal powers of two (SplitTarget::None -> Amount::split).
+    Ok(Wallet::new(mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, Some(0))?)
 }

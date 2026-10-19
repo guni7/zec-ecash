@@ -21,6 +21,15 @@
       <section class="card balance">
         <div class="label">Balance</div>
         <div><span id="balance" class="amount">0</span> <span class="unit">zat</span></div>
+        <div id="pending" class="muted" hidden></div>
+      </section>
+
+      <section class="card">
+        <h2>Receive offline</h2>
+        <p class="muted">Show this key to the sender. A token locked to it (with its mint signatures
+          included) can be accepted with no network and is redeemed automatically once you're back online.</p>
+        <canvas id="my-pubkey-qr"></canvas>
+        <textarea id="my-pubkey" rows="2" readonly spellcheck="false"></textarea>
       </section>
 
       <section class="card">
@@ -43,12 +52,33 @@
           <span class="unit">zat</span>
           <button id="send-btn" type="button" class="primary">Create token</button>
         </div>
+        <label class="muted check"><input id="send-compact" type="checkbox" checked />
+          Compact token (smaller QR; the receiver can't verify it offline)</label>
         <div id="sent" class="sent" hidden>
           <canvas id="sent-qr"></canvas>
           <textarea id="sent-token" rows="3" readonly spellcheck="false"></textarea>
           <div class="row">
             <button id="copy-btn" type="button">Copy token</button>
             <span id="sent-note" class="muted"></span>
+          </div>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Request payment</h2>
+        <p class="muted">A NUT-18 payment request from the point-of-sale server: the payer's wallet
+          sends locked ecash straight to it, and this page shows when it's paid.</p>
+        <div class="row">
+          <input id="req-amount" type="number" inputmode="numeric" min="1" step="1" placeholder="Amount" />
+          <span class="unit">zat</span>
+          <button id="req-btn" type="button" class="primary">Create request</button>
+        </div>
+        <div id="req" class="sent" hidden>
+          <canvas id="req-qr"></canvas>
+          <textarea id="req-text" rows="3" readonly spellcheck="false"></textarea>
+          <div class="row">
+            <button id="req-copy" type="button">Copy request</button>
+            <span id="req-state" class="muted"></span>
           </div>
         </div>
       </section>

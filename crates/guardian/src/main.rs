@@ -88,8 +88,9 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().with_target(false).init();
     let args = parse_args()?;
+    // Size-capped: devnet/logs/guardian-N.log (+ rotated files), see the devlog crate.
+    devlog::init(&args.dir.join("logs"), &format!("guardian-{}", args.id), "info")?;
     match args.cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["dkg", "part1"] => dkg_part1(&args),
         ["dkg", "part2"] => dkg_part2(&args),

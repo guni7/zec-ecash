@@ -1089,6 +1089,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "devlog"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "tracing-subscriber",
+]
+
+[[package]]
 name = "devwallet"
 version = "0.1.0"
 dependencies = [
@@ -1512,6 +1520,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "axum",
+ "devlog",
  "hex",
  "orchard",
  "pczt",
@@ -1520,7 +1529,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "zcash_keys",
  "zec-frost",
  "zec-wallet",
@@ -2650,6 +2658,26 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "10ab3eb7f3becc3a1cbc4f2c6f20267996cfc1a6467a873763411b136a122715"
 dependencies = [
  "portable-atomic",
+]
+
+[[package]]
+name = "pos"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "axum",
+ "bitreq",
+ "cdk",
+ "cdk-common",
+ "cdk-redb",
+ "devlog",
+ "hex",
+ "rand 0.8.8",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]
@@ -4820,6 +4848,7 @@ dependencies = [
  "cdk",
  "cdk-common",
  "cdk-redb",
+ "devlog",
  "hex",
  "qrcode",
  "rand 0.8.8",
@@ -4851,6 +4880,7 @@ dependencies = [
  "async-trait",
  "cdk-common",
  "cdk-payment-processor",
+ "devlog",
  "futures",
  "hex",
  "orchard",
@@ -4860,7 +4890,6 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
- "tracing-subscriber",
  "zcash_client_backend",
  "zcash_client_sqlite",
  "zcash_keys",

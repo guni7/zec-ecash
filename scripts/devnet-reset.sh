@@ -40,13 +40,16 @@ stop() { # stop processes matching $1: SIGTERM (scripted background jobs ignore 
   echo "stopped $2"
 }
 stop 'target/debug/zec-processor' zec-processor
+stop 'target/debug/pos' pos
 stop 'target/debug/guardian' guardians
 stop 'cdk-mintd' cdk-mintd
 stop 'zebrad -c devnet/zebrad-regtest.toml' zebrad
+stop 'scripts/log-trim.sh --watch' log-trimmer
+pkill -TERM -f 'web/node_modules/.bin/vite' 2>/dev/null || true
 
 echo "deleting chain-dependent state:"
 for p in devnet/zebra-state devnet/mint devnet/*.sqlite devnet/*.sqlite-shm devnet/*.sqlite-wal \
-         devnet/*.sqlite-journal devnet/*.redb devnet/guardian-*.signed.json devnet/*.log devnet/quote.json; do
+         devnet/*.sqlite-journal devnet/*.redb devnet/guardian-*.signed.json devnet/*.log devnet/logs devnet/quote.json; do
   if [ -e "$p" ]; then rm -rf "$p"; echo "  deleted $p"; fi
 done
 

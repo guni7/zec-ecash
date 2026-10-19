@@ -26,6 +26,12 @@ function mintHost(): string | undefined {
 }
 
 export default defineConfig({
+  // Pre-bundle every dependency at startup. Otherwise Vite discovers new imports on first page
+  // load, re-bundles and forces a reload, and an already-open phone gets "504 Outdated Optimize
+  // Dep" (a blank page) until it reloads.
+  optimizeDeps: {
+    include: ['@cashu/cashu-ts', 'qrcode', 'qr-scanner', '@noble/curves/secp256k1.js'],
+  },
   server: {
     host: true, // all interfaces
     port: 5173,
@@ -43,6 +49,12 @@ export default defineConfig({
         changeOrigin: true,
         ws: true, // NUT-17 subscriptions (the CLI waits for quotes over websockets)
         rewrite: (path) => path.replace(/^\/mint/, ''),
+      },
+      // NUT-18 point of sale (crates/pos); its requests' HTTP transport points here too.
+      '/pos': {
+        target: process.env.ZEC_POS_UPSTREAM ?? 'http://127.0.0.1:8090',
+        changeOrigin: true,
+        rewrite: (path) => path.replace(/^\/pos/, ''),
       },
     },
   },

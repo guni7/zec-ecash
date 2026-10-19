@@ -22,12 +22,13 @@ use zec_wallet::Wallet;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    tracing_subscriber::fmt()
-        .with_env_filter(
-            tracing_subscriber::EnvFilter::try_from_default_env()
-                .unwrap_or_else(|_| "info,zcash_client_backend=warn,zcash_client_sqlite=warn".into()),
-        )
-        .init();
+    // Size-capped: devnet/logs/processor.log (+ .1 .. .5), see the devlog crate.
+    let log = devlog::init(
+        std::path::Path::new("devnet/logs"),
+        "processor",
+        "info,zcash_client_backend=warn,zcash_client_sqlite=warn",
+    )?;
+    eprintln!("zec-processor: logging to {}", log.display());
     let cfg = config::Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("make-ufvk") {
         return make_ufvk(&cfg);

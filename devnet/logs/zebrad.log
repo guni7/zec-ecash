@@ -1,0 +1,474 @@
+2026-10-18T19:42:52.852529Z  INFO zebrad::components::tracing::component: started tracing component filter="info" TRACING_STATIC_MAX_LEVEL=LevelFilter::INFO LOG_STATIC_MAX_LEVEL=Info
+2026-10-18T19:42:52.854101Z  INFO zebrad::components::tracing::component: installed sentry tracing layer
+2026-10-18T19:42:52.854105Z  INFO zebrad::components::tracing::component: set 'tracing.progress_bar ="summary"' in zebrad.toml to activate progress bars
+2026-10-18T19:42:52.854106Z  INFO zebrad::application: Diagnostic metadata:
+version: 6.4.2
+Zcash network: Regtest
+running state version: 28.0.0
+initial disk state version: 28.0.0
+features: default,default_release_binaries,howudoin,indicatif,metrics_exporter_prometheus,opentelemetry,progress_bar,prometheus,release_max_level_info,sentry
+target triple: aarch64-apple-darwin
+rust compiler: 1.99.0
+rust release date: 2026-09-28
+optimization level: 3
+debug checks: false
+2026-10-18T19:42:52.854109Z  INFO zebrad::application: Using config file at: "devnet/zebrad-regtest.toml"
+2026-10-18T19:42:52.854112Z  INFO zebrad::application: ZebradConfig { consensus: Config { checkpoint_sync: true }, metrics: Config { endpoint_addr: None }, network: Config { listen_addr: 127.0.0.1:18344, external_addr: None, network: Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) }, initial_mainnet_peers: {"dnsseed.str4d.xyz:8233", "dnsseed.z.cash:8233", "mainnet.seeder.shieldedinfra.net:8233", "mainnet.seeder.zfnd.org:8233", "seeder.zec.rocks:8233"}, initial_testnet_peers: {"dnsseed.testnet.z.cash:18233", "seeder.testnet.zec.rocks:18233", "testnet.seeder.zfnd.org:18233"}, cache_dir: IsEnabled(false), peerset_initial_target_size: 25, crawl_new_peer_interval: 61s, max_connections_per_ip: 1 }, state: Config { cache_dir: "./devnet/zebra-state", ephemeral: false, should_backup_non_finalized_state: true, delete_old_database: true, debug_stop_at_height: None, debug_validity_check_interval: None, debug_skip_non_finalized_state_backup_task: false }, tracing: Config { inner: InnerConfig { use_color: true, force_use_color: false, filter: None, buffer_limit: 128000, endpoint_addr: None, flamegraph: None, progress_bar: None, log_file: None, use_journald: false, opentelemetry_endpoint: None, opentelemetry_service_name: None, opentelemetry_sample_percent: None } }, sync: Config { download_concurrency_limit: 50, checkpoint_verify_concurrency_limit: 1000, full_verify_concurrency_limit: 20, parallel_cpu_threads: 0 }, mempool: Config { tx_cost_limit: 80000000, eviction_memory_time: 3600s, debug_enable_at_height: Some(0), max_datacarrier_bytes: Some(83) }, notify: Config { block_notify_command: None }, rpc: Config { listen_addr: Some(127.0.0.1:18232), indexer_listen_addr: None, lightwalletd_listen_addr: Some(127.0.0.1:9067), parallel_cpu_threads: 0, debug_force_finished_sync: false, cookie_dir: "/Users/gunit/Library/Caches/zebra", enable_cookie_auth: false, max_response_body_size: 52428800 }, mining: Config { miner_address: Some(ZcashAddress { net: Regtest, kind: Unified(Address([Orchard([174, 38, 55, 150, 91, 207, 193, 65, 240, 96, 88, 182, 96, 90, 79, 240, 167, 240, 237, 67, 97, 230, 152, 30, 11, 161, 122, 156, 246, 123, 17, 36, 31, 246, 225, 249, 216, 231, 125, 95, 25, 235, 9])])) }), extra_coinbase_data: None, miner_memo: None, internal_miner: false }, health: Config { listen_addr: None, min_connected_peers: 1, ready_max_blocks_behind: 2, enforce_on_test_networks: false, ready_max_tip_age: 300s }, zcashd_compat: Config { enabled: false, manage_zcashd: false, zcashd_source: Path, zcashd_path: None, zcashd_datadir: None, zcashd_extra_args: [], p2p_connect_addr: None, block_gossip_peer_ips: [], startup_delay: 1s, restart_backoff: 2s, restart_backoff_max: 300s, restart_reset_after: 3600s, shutdown_grace_period: 300s } }
+2026-10-18T19:42:52.855035Z  INFO zebrad::application: configured miner address miner_address=uregtest1fyemlup5tzgqajpn5kpegeu308zygn6r4r0udeh52tp2razp99d2r6yjr5lwhnhmtjkaazet39c3xzyl4z7372uepcxcvh22vvucjsur
+2026-10-18T19:42:52.856005Z  INFO {net="Regtest"}: zebrad::application: initialized rayon thread pool for CPU-bound tasks num_threads=12
+2026-10-18T19:42:52.856976Z  INFO zebrad::commands::start: Starting zebrad
+2026-10-18T19:42:52.857972Z  INFO zebrad::commands::start: initializing node state
+2026-10-18T19:42:52.858126Z  INFO zebrad::commands::start: opening database, this may take a few minutes
+2026-10-18T19:42:52.859970Z  INFO zebra_state::service::finalized_state::disk_format::upgrade: trying to open current database format running_version=28.0.0
+2026-10-18T19:42:52.878397Z  INFO zebra_state::service::finalized_state::disk_db: Opened Zebra state cache at ./devnet/zebra-state/state/v28/regtest
+2026-10-18T19:42:52.879503Z  INFO zebra_state::service::finalized_state::disk_format::upgrade: checking database format produced by a previous zebra instance is current and valid running_version=28.0.0
+2026-10-18T19:42:52.880485Z  INFO zebra_state::service::finalized_state::disk_format::upgrade: database format is valid running_version=28.0.0 initial_disk_version=28.0.0
+2026-10-18T19:42:52.880496Z  INFO zebra_state::service::non_finalized_state: restoring non-finalized blocks from backup and spawning backup task backup_dir_path="./devnet/zebra-state/non_finalized_state/regtest"
+2026-10-18T19:42:53.271532Z  INFO zebra_state::service::non_finalized_state: restored blocks from non-finalized backup cache num_blocks_restored=118
+2026-10-18T19:42:53.271745Z  INFO zebra_state::service: loaded Zebra state cache chain_tip=Some((block::Hash("d697f68ff51c5387c4f479d2d478ccc7746b983a230870b754fafe4e4d090f7b"), Height(118)))
+2026-10-18T19:42:53.272232Z  INFO zebra_state::service: starting legacy chain check
+2026-10-18T19:42:53.272673Z  INFO zebra_state::service: cached state consensus branch is valid: no legacy chain found
+2026-10-18T19:42:53.272849Z  INFO zebrad::commands::start: logging database metrics on startup
+2026-10-18T19:42:53.273014Z  INFO zebra_state::service::finalized_state::disk_db: Total Database Disk Size: 21.7 KB
+2026-10-18T19:42:53.273017Z  INFO zebra_state::service::finalized_state::disk_db: Total Live Data Disk Size: 21.7 KB
+2026-10-18T19:42:53.273018Z  INFO zebra_state::service::finalized_state::disk_db: Total Database Memory Size: 61.4 KB
+2026-10-18T19:42:53.273036Z  INFO zebrad::commands::start: initializing network
+2026-10-18T19:42:53.273068Z  WARN open_listener{addr=127.0.0.1:18344}: zebra_network::peer_set::initialize: We are configured with address 127.0.0.1:18344 on Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) }, but it could cause network issues. The default port for Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) } is 18233. Error: "invalid peer port: port is for Regtest, but Zebra does not support that network"
+2026-10-18T19:42:53.273106Z  INFO open_listener{addr=127.0.0.1:18344}: zebra_network::peer_set::initialize: Trying to open Zcash protocol endpoint at 127.0.0.1:18344...
+2026-10-18T19:42:53.273152Z  INFO open_listener{addr=127.0.0.1:18344}: zebra_network::peer_set::initialize: Opened Zcash protocol endpoint at 127.0.0.1:18344
+2026-10-18T19:42:53.273754Z  INFO zebra_network::address_book_updater: starting the address book updater
+2026-10-18T19:42:53.480505Z  INFO add_initial_peers: zebra_network::config: resolved seed peer IP addresses seed="seeder.testnet.zec.rocks:18233" remote_ip_count=25
+2026-10-18T19:42:53.611427Z  INFO add_initial_peers: zebra_network::config: resolved seed peer IP addresses seed="testnet.seeder.zfnd.org:18233" remote_ip_count=25
+2026-10-18T19:42:53.688053Z  INFO add_initial_peers: zebra_network::config: resolved seed peer IP addresses seed="dnsseed.testnet.z.cash:18233" remote_ip_count=12
+2026-10-18T19:42:53.688600Z  INFO add_initial_peers: zebra_network::peer_set::initialize: connecting to initial peer set ipv4_peer_count=0 ipv6_peer_count=0
+2026-10-18T19:42:53.688660Z  INFO add_initial_peers: zebra_network::peer_set::initialize: finished connecting to initial seed and disk cache peers handshake_success_total=0 handshake_error_total=0 outbound_connections=0
+2026-10-18T19:42:53.688838Z  INFO zebra_network::peer_set::initialize: sending initial request for peers active_initial_peer_count=0
+2026-10-18T19:42:53.689333Z  INFO zebrad::commands::start: initializing verifiers
+2026-10-18T19:42:53.689365Z  INFO crawl_and_dial{new_peer_interval=61s}: zebra_network::peer_set::initialize: starting the peer address crawler crawl_new_peer_interval=61s outbound_connections=0
+2026-10-18T19:42:53.689849Z  INFO init{config=Config { checkpoint_sync: true } network=Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) }}: zebra_consensus::router: starting state checkpoint validation
+2026-10-18T19:42:53.689848Z  INFO init{config=Config { checkpoint_sync: true } network=Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) }}: zebra_consensus::router: initializing block verifier router tip=Some((Height(118), block::Hash("d697f68ff51c5387c4f479d2d478ccc7746b983a230870b754fafe4e4d090f7b"))) max_checkpoint_height=Height(0)
+2026-10-18T19:42:53.689903Z  INFO zebrad::commands::start: initializing syncer
+2026-10-18T19:42:53.689995Z  INFO zebrad::commands::start: initializing mempool
+2026-10-18T19:42:53.690084Z  INFO zebrad::commands::start: fully initializing inbound peer request handler
+2026-10-18T19:42:53.690559Z  INFO init{config=Config { checkpoint_sync: true } network=Regtest { activation_heights: {Height(0): Genesis, Height(1): Nu6_3}, funding_streams: [], lockbox_disbursements: [], checkpoints: CheckpointList({Height(0): block::Hash("029f11d80ef9765602235e1bc9727e3eb6ba20839319f761fee920d63401e327")}) }}: zebra_consensus::router: finished state checkpoint validation
+2026-10-18T19:42:53.692484Z  INFO zebrad::commands::start: spawned block template updater task
+2026-10-18T19:42:53.692806Z  INFO zebra_rpc::server: Opened RPC endpoint at 127.0.0.1:18232
+2026-10-18T19:42:53.692888Z  WARN zebrad::commands::start: configure an indexer_listen_addr to start the indexer RPC server
+2026-10-18T19:42:53.692908Z  INFO zebrad::commands::start: spawning lightwalletd gRPC server
+2026-10-18T19:42:53.693861Z  INFO init: zebra_rpc::lightwalletd::server: Trying to open lightwalletd gRPC endpoint at 127.0.0.1:9067...
+2026-10-18T19:42:53.693917Z  INFO init: zebra_rpc::lightwalletd::server: Opened lightwalletd gRPC endpoint at 127.0.0.1:9067
+2026-10-18T19:42:53.693941Z  INFO zebrad::commands::start: spawning block gossip task
+2026-10-18T19:42:53.693951Z  INFO zebrad::commands::start: spawning block notify task
+2026-10-18T19:42:53.693955Z  INFO zebrad::commands::start: spawning mempool queue checker task
+2026-10-18T19:42:53.693960Z  INFO zebrad::commands::start: spawning mempool transaction gossip task
+2026-10-18T19:42:53.693958Z  INFO zebrad::components::sync::gossip: initializing block gossip task
+2026-10-18T19:42:53.693965Z  INFO zebrad::commands::start: spawning delete old databases task
+2026-10-18T19:42:53.693970Z  INFO zebrad::components::mempool::gossip: initializing transaction gossip task
+2026-10-18T19:42:53.693971Z  INFO zebrad::commands::start: spawning progress logging task
+2026-10-18T19:42:53.693977Z  INFO zebrad::commands::start: initializing health endpoints
+2026-10-18T19:42:53.693983Z  INFO zebrad::commands::start: spawning end of support checking task
+2026-10-18T19:42:53.693990Z  INFO zebrad::components::mempool::queue_checker: initializing mempool queue checker task
+2026-10-18T19:42:53.693994Z  INFO zebrad::commands::start: spawning mempool crawler task
+2026-10-18T19:42:53.693989Z  INFO zebra_state::config: checking for old database versions db_kind="state"
+2026-10-18T19:42:53.694000Z  INFO zebrad::commands::start: spawning syncer task
+2026-10-18T19:42:53.694000Z  INFO zebrad::components::sync::end_of_support: Starting end of support task
+2026-10-18T19:42:53.694005Z  INFO zebrad::components::mempool::crawler: initializing mempool crawler task
+2026-10-18T19:42:53.694040Z  WARN zebrad::components::sync::progress: chain tip metrics channel closed err=SendError { .. }
+2026-10-18T19:42:53.694132Z  INFO zebra_state::config: finished old database version cleanup task
+2026-10-18T19:42:53.694408Z  INFO zebrad::commands::start: spawned initial Zebra tasks
+2026-10-18T19:42:53.694690Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:42:55.648165Z  INFO zebrad::components::mempool: activating mempool: Zebra is close to the tip tip_height=Height(118)
+2026-10-18T19:43:00.697907Z  INFO zebrad::components::sync::gossip: height=Height(118) request=AdvertiseBlock(block::Hash("d697f68ff51c5387c4f479d2d478ccc7746b983a230870b754fafe4e4d090f7b"), None) log_msg="sending committed block broadcast"
+2026-10-18T19:43:03.696070Z  INFO zebrad::components::sync::end_of_support: Release always valid in Testnet
+2026-10-18T19:43:53.717845Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608853 after_checkpoint_height=Height(1010) time_since_last_state_block=1m
+2026-10-18T19:43:54.279896Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:44:00.696095Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:44:00.696637Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:44:02.698914Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:44:53.743476Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608854 after_checkpoint_height=Height(1010) time_since_last_state_block=2m
+2026-10-18T19:45:03.694180Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:45:09.700546Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:45:09.700653Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:45:11.702070Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:45:25.700622Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T19:45:53.768144Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608855 after_checkpoint_height=Height(1010) time_since_last_state_block=3m
+2026-10-18T19:46:04.693320Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:46:18.704660Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:46:18.704759Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:46:20.707498Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:46:53.792797Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608855 after_checkpoint_height=Height(1010) time_since_last_state_block=4m
+2026-10-18T19:47:05.692589Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:47:27.635081Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:47:27.635494Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:47:29.637762Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:47:51.629023Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T19:47:53.741295Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608856 after_checkpoint_height=Height(1010) time_since_last_state_block=5m
+2026-10-18T19:48:06.619178Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:48:36.638572Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:48:36.638732Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:48:38.640046Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:48:53.766054Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608857 after_checkpoint_height=Height(1010) time_since_last_state_block=6m
+2026-10-18T19:49:07.617356Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:49:45.640751Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:49:45.640913Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:49:47.642356Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:49:53.789935Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608858 after_checkpoint_height=Height(1010) time_since_last_state_block=7m
+2026-10-18T19:50:08.616658Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:50:17.631379Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T19:50:53.813519Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608859 after_checkpoint_height=Height(1010) time_since_last_state_block=8m
+2026-10-18T19:50:54.643774Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:50:54.643884Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:50:56.645214Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:51:09.614329Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:51:53.836674Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608859 after_checkpoint_height=Height(1010) time_since_last_state_block=9m
+2026-10-18T19:52:03.646195Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:52:03.646291Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:52:05.648090Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:52:10.614470Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:52:43.632649Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T19:52:53.865361Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608860 after_checkpoint_height=Height(1010) time_since_last_state_block=10m
+2026-10-18T19:53:11.613255Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:53:12.648913Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:53:12.649015Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:53:14.650685Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:53:53.886364Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608861 after_checkpoint_height=Height(1010) time_since_last_state_block=11m
+2026-10-18T19:54:12.612152Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:54:21.651724Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:54:21.651809Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:54:23.654057Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:54:53.915364Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608862 after_checkpoint_height=Height(1010) time_since_last_state_block=12m
+2026-10-18T19:55:09.634251Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T19:55:13.612434Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:55:30.655080Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:55:30.655182Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:55:32.656667Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:55:53.937650Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608863 after_checkpoint_height=Height(1010) time_since_last_state_block=13m
+2026-10-18T19:56:14.613251Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T19:56:39.658130Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T19:56:39.658649Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T19:56:41.660384Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T19:56:53.961046Z  INFO zebrad::components::sync::progress: initial sync is very slow, or estimated tip is wrong. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 remaining_sync_blocks=6608863 after_checkpoint_height=Height(1010) time_since_last_state_block=14m
+2026-10-18T19:57:15.610406Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T20:00:28.523034Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T20:02:37.927803Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T20:02:37.927864Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T20:02:39.931158Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T20:02:43.257858Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 19 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19m 49s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T20:18:06.270441Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T20:49:04.498336Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 66 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=1h 6m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T20:49:08.143592Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T20:49:08.143686Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T20:49:10.147894Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T21:04:28.491131Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T21:35:06.367146Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 112 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=1h 52m 12s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T21:35:13.965557Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T21:35:19.006130Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T21:35:19.006244Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T21:35:21.011507Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T21:35:30.952121Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T21:58:19.056169Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 135 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=2h 15m 25s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T22:13:41.064299Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T22:13:41.064422Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T22:13:43.066838Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T22:13:44.997850Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T22:29:35.399234Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 166 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=2h 46m 41s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T23:00:03.609616Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T23:00:07.683203Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T23:00:07.683306Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T23:00:09.688211Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T23:00:10.647100Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-18T23:18:33.155474Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 215 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=3h 35m 39s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-18T23:34:00.660839Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-18T23:49:13.431167Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-18T23:49:13.431255Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-18T23:49:15.433178Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-18T23:58:34.184805Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 255 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=4h 15m 40s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T00:14:02.878070Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T00:29:41.687011Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T00:29:41.687189Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T00:29:43.691538Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T00:29:52.646818Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T00:29:53.216525Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 286 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=4h 46m 59s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T01:00:23.818311Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T01:15:51.668728Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T01:15:51.668862Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T01:15:53.672595Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T01:15:54.225393Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 333 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=5h 33m target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T01:31:25.499728Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T01:51:19.229062Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 368 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=6h 8m 25s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T02:06:26.747086Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T02:06:26.747158Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T02:06:28.746031Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T02:06:45.673472Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T02:21:51.418572Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T02:22:20.148778Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 399 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=6h 39m 26s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T02:37:36.637471Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T02:37:36.637612Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T02:37:38.639189Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T02:52:53.979800Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T03:08:22.833782Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 445 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=7h 25m 29s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T03:23:48.441639Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T03:23:48.441756Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T03:23:50.445131Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T03:23:57.334744Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T03:31:28.264687Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T03:31:36.992392Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 468 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=7h 48m 43s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T03:53:57.087310Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T03:53:57.087431Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T03:53:57.975362Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T03:53:59.090523Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T03:54:23.788285Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 491 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=8h 11m 30s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T04:53:25.370769Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T05:09:27.048772Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T05:09:27.048898Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T05:26:05.792926Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T05:54:21.037520Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 611 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=10h 11m 27s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T06:55:15.138707Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T07:45:38.488636Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T08:13:38.936832Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T08:13:38.936959Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T08:30:20.669280Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T08:46:42.186556Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 783 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=13h 3m 48s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T09:58:21.924102Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T10:59:19.553541Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 916 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=15h 16m 25s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T10:59:19.760749Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T10:59:19.760831Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T10:59:21.763633Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T12:00:14.002513Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T12:00:19.062463Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T12:51:07.675294Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1028 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=17h 8m 13s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T13:01:16.593168Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T13:01:16.593253Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T13:01:18.597242Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T14:18:44.841098Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T14:57:25.546166Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1154 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 14m 31s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:04:57.337285Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:04:57.337600Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:04:59.340565Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:05:18.539464Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:05:38.553285Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1162 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 22m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:05:47.603588Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:06:05.691020Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:06:05.691124Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:06:07.693505Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:06:19.537734Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:06:38.576037Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1163 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 23m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:07:14.693691Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:07:14.693782Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:07:16.695896Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:07:20.535605Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:07:38.599308Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1164 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 24m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:08:13.603185Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:08:21.533897Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:08:23.695761Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:08:23.695857Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:08:25.697891Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:08:38.623121Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1165 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 25m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:09:22.531550Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:09:32.698379Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:09:32.698559Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:09:34.699977Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:09:38.645856Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1166 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 26m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:10:23.530566Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:10:38.669432Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1167 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 27m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:10:39.603829Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:10:41.700550Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:10:41.700643Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:10:43.702723Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:11:24.529897Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:11:38.690653Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1168 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 28m 44s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:11:50.703328Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:11:50.703552Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:11:52.705749Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:12:25.527347Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:12:38.714230Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1169 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 29m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:12:59.704828Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:12:59.704966Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:13:01.707018Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:13:05.603082Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:13:26.525417Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:13:38.738073Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1170 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 30m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:14:08.713767Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:14:08.714199Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:14:10.716520Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:14:27.523101Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:14:38.762185Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1171 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 31m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:15:17.717090Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:15:17.717224Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:15:19.718788Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:15:28.521695Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:15:31.603050Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:15:38.785902Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1172 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 32m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:16:26.718669Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:16:26.718813Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:16:28.720295Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:16:29.519241Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:16:38.810691Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1173 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 33m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:17:30.518837Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:17:35.720984Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:17:35.721109Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:17:37.723498Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:17:38.832980Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1174 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 34m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:17:57.602622Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:18:31.515344Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:18:38.854916Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1175 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 35m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:18:44.723068Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:18:44.723161Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:18:46.732125Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:19:32.514092Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:19:38.878033Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1176 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 36m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:19:53.732369Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:19:53.732504Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:19:55.735089Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:20:23.601810Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:20:33.510459Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:20:38.901667Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1177 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 37m 45s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:21:03.906196Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:21:03.906327Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:21:05.908303Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:21:35.680261Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:21:40.094544Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1178 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 38m 46s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:22:12.911246Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:22:12.911337Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:22:14.913554Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:22:36.681730Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:22:40.118914Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1179 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 39m 46s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:22:50.776482Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:23:21.720347Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:23:21.720478Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:24:48.346897Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:25:02.099128Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:25:04.560469Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1182 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 42m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:25:55.356588Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:25:55.357811Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:25:57.359981Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:26:03.095609Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:26:04.584513Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1183 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 43m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:26:41.195709Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:27:04.096075Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:27:04.362327Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:27:04.362417Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:27:04.607047Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1184 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 44m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:27:06.364836Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:28:04.628893Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1185 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 45m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:28:05.097013Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:28:13.365637Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:28:13.365707Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:28:15.368115Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:29:04.652956Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1186 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 46m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:29:06.096097Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:29:07.198277Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:29:22.370813Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:29:22.370857Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:29:24.372473Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:30:04.677872Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1187 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 47m 10s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:30:07.094032Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:30:31.373989Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:30:31.374074Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:30:33.375881Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:31:04.703144Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1188 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 48m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:31:08.094909Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:31:33.202189Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:31:40.378465Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:31:40.378564Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:31:42.380988Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:32:04.725969Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1189 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 49m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:32:09.096737Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:32:49.382697Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:32:49.382803Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:32:51.384277Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:33:04.751127Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1190 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 50m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:33:10.096243Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:33:13.112786Z  INFO zebrad::components::sync::end_of_support: Release always valid in Testnet
+2026-10-19T15:33:58.389811Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:33:58.389971Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:33:59.204366Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:34:00.391938Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:34:04.773267Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1191 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 51m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:34:11.095576Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:35:04.797762Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1192 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 52m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:35:07.393194Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:35:07.393303Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:35:09.395410Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:35:12.095732Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:36:04.820043Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1193 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 53m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:36:13.095411Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:36:16.397258Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:36:16.397401Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:36:18.399214Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:36:25.207858Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:37:04.849648Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1194 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 54m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:37:14.094619Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:37:25.401230Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:37:25.401353Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:37:27.402812Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:38:04.876004Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1195 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 55m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:38:15.095026Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:38:34.404596Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:38:34.404691Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:38:36.406173Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:38:51.211927Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:39:04.898475Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1196 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 56m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:39:16.094479Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:39:43.370793Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:39:43.370898Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:39:45.372427Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:40:04.880129Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1197 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 57m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:40:17.050073Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:40:52.366537Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:40:52.366667Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:40:54.369009Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:41:04.899040Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1198 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 58m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:41:17.168405Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:41:18.048114Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:42:01.370021Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:42:01.370215Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:42:03.371903Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:42:04.923105Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1199 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=19h 59m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:42:19.048311Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:43:04.949141Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1200 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:43:10.373832Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:43:10.373960Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:43:12.375461Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:43:20.048399Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:43:43.171701Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:44:04.972636Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1201 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 1m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:44:19.377371Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:44:19.377507Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:44:21.046912Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:44:21.379289Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:45:04.995764Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1202 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 2m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:45:22.048254Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:45:28.383662Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:45:28.383803Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:45:30.384786Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:46:05.017587Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1203 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 3m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:46:09.174592Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:46:23.045452Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:46:37.386488Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:46:37.386673Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:46:39.388955Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:47:05.045386Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1204 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 4m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:47:24.046331Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:47:46.390398Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:47:46.390499Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:47:48.392504Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:48:05.067605Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1205 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 5m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:48:25.046263Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:48:35.177304Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:48:55.394612Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:48:55.394683Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:48:57.395930Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:49:05.092944Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1206 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 6m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:49:26.046313Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:50:04.399725Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:50:04.399849Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:50:05.116463Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1207 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 7m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:50:06.401643Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:50:27.044962Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses
+2026-10-19T15:51:01.180469Z  INFO zebrad::components::mempool::crawler: mempool crawl timed out: Elapsed(())
+2026-10-19T15:51:05.138504Z  WARN zebrad::components::sync::progress: chain updates have stalled, state height has not increased for 1208 minutes. Hint: check your network connection, and your computer clock and time zone sync_percent=0.002% current_height=Height(118) network_upgrade=Nu6_3 time_since_last_state_block=20h 8m 11s target_block_spacing=1m 15s max_block_spacing=7m 30s is_syncer_stopped=true
+2026-10-19T15:51:13.403812Z  INFO sync:try_to_sync: zebrad::components::sync: temporary error obtaining tips: deadline has elapsed
+2026-10-19T15:51:13.403897Z  INFO sync: zebrad::components::sync: waiting to restart sync timeout=2s state_tip=Some(Height(118))
+2026-10-19T15:51:15.405722Z  INFO sync:try_to_sync: zebrad::components::sync: starting sync, obtaining new tips state_tip=Some(Height(118))
+2026-10-19T15:51:28.044440Z  INFO crawl_and_dial{new_peer_interval=61s}:crawl: zebra_network::peer_set::candidate_set::crawl: timeout waiting for peer service readiness or peer responses

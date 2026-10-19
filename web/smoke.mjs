@@ -5,7 +5,7 @@ import { Amount, MintOperationError, Wallet, getEncodedToken, getTokenMetadata }
 const [mode, arg] = process.argv.slice(2);
 const MINT_URL = process.env.ZEC_MINT_URL;
 if (!MINT_URL) throw new Error('set ZEC_MINT_URL (see .env)');
-const w = new Wallet(MINT_URL, { unit: 'zat' });
+const w = new Wallet(MINT_URL, { unit: 'zat', denominationTarget: 0 }); // same as the page
 await w.loadMint();
 const fs = await import('node:fs');
 const STORE = process.env.SMOKE_STORE ?? 'smoke-proofs.json';
@@ -25,6 +25,7 @@ if (mode === 'receive') {
 } else if (mode === 'send') {
   const { keep, send } = await w.send(Number(arg), load());
   save(keep);
-  process.stdout.write(getEncodedToken({ mint: MINT_URL, unit: 'zat', proofs: send }) + '\n');
-  console.error(`sent ${arg} zat; balance ${bal(keep)} zat`);
+  const tok = getEncodedToken({ mint: MINT_URL, unit: 'zat', proofs: send });
+  process.stdout.write(tok + '\n');
+  console.error(`sent ${arg} zat in ${send.length} proofs, ${tok.length} chars; balance ${bal(keep)} zat`);
 } else console.log(`balance ${bal(load())} zat`);

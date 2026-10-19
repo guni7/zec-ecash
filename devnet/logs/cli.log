@@ -1,0 +1,21 @@
+2026-10-18T17:30:00.310507Z ERROR cdk::wallet::subscription: Closing error Transient("Trying to work with closed connection")
+2026-10-18T17:30:00.311368Z ERROR cdk_common::pub_sub::remote_consumer: Long connection failed with error Terminal("WebSocket protocol error: Connection reset without closing handshake")
+2026-10-18T17:30:00.319562Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:30:14.424582Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:30:16.441940Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:30:18.460868Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:33:04.616813Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(None, "peer closed connection without sending TLS close_notify: https://docs.rs/rustls/latest/rustls/manual/_03_howto/index.html#unexpected-eof")
+2026-10-18T17:33:06.628463Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:33:08.635826Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:33:10.648410Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:33:12.665168Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T17:33:18.711448Z ERROR cdk::wallet::subscription: Error with Custom Melt Quote 01a15010-02d7-749c-a170-90bef39c7943 with HttpError(Some(500), "")
+2026-10-18T18:39:43.057833Z  WARN cdk::wallet::receive::saga: Failed to post swap request (ambiguous): Token Already Spent.
+2026-10-18T18:46:58.779026Z  WARN cashu::nuts::nut12: DLEQ on signature failed
+2026-10-18T18:47:33.958082Z  INFO cdk_redb::wallet: Current file version 6
+2026-10-18T18:47:33.959635Z  INFO cdk_redb::wallet: Database is at current version 6
+2026-10-18T18:47:34.000976Z  INFO keysets{policy=CacheOnly}: cdk::wallet::mint_metadata_cache: Loaded cache from database for https://gunits-macbook-pro-2.local:5173/mint with 0 keysets (version 1)
+2026-10-18T18:48:08.298598Z ERROR cdk::wallet::send: error=Insufficient funds
+2026-10-18T18:48:08.508095Z ERROR cdk::wallet::send: error=Insufficient funds
+2026-10-18T18:48:27.249824Z  WARN cashu::nuts::nut12: DLEQ on signature failed
+2026-10-18T18:48:28.756077Z  WARN cashu::nuts::nut12: DLEQ on signature failed

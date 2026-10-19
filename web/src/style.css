@@ -85,3 +85,7 @@ button:disabled { opacity: 0.55; cursor: progress; }
 .message { min-height: 1.4em; font-size: 14px; }
 .message.ok { color: var(--ok); }
 .message.bad { color: var(--bad); }
+.check { display: flex; gap: 8px; align-items: center; margin-top: 10px; }
+.check input { width: auto; }
+#my-pubkey-qr { display: block; margin: 8px auto; background: #fff; padding: 8px; border-radius: 8px; max-width: 100%; height: auto; }
+#pending { margin-top: 4px; }

@@ -23,8 +23,9 @@ pub struct Config {
     pub processor_db: PathBuf,
     /// Where cdk-mintd's `grpcprocessor` backend connects.
     pub grpc_addr: SocketAddr,
-    /// Confirmations a deposit needs before its quote is PAID.
-    pub confirmations: u32,
+    /// Depth a deposit needs before its quote is PAID, and a withdrawal before it settles PAID
+    /// (ZEC_MIN_CONFIRMATIONS; default by network, see [`default_min_confirmations`]).
+    pub min_confirmations: u32,
     pub min_zats: u64,
     pub max_zats: u64,
     pub sync_interval: Duration,
@@ -61,14 +62,45 @@ impl Config {
             grpc_addr: get("ZEC_GRPC_ADDR", "127.0.0.1:50051")
                 .parse()
                 .context("ZEC_GRPC_ADDR must be host:port")?,
-            confirmations: num("ZEC_CONFIRMATIONS", "1")?
-                .try_into()
-                .context("ZEC_CONFIRMATIONS too large")?,
+            min_confirmations: resolve_min_confirmations(
+                std::env::var("ZEC_MIN_CONFIRMATIONS").ok().or_else(|| dotenv.get("ZEC_MIN_CONFIRMATIONS").cloned()).as_deref(),
+                std::env::var("ZEC_CONFIRMATIONS").ok().or_else(|| dotenv.get("ZEC_CONFIRMATIONS").cloned()).as_deref(),
+                zcash_protocol::consensus::Parameters::network_type(&zec_wallet::regtest::regtest_network()),
+            )?,
             min_zats: num("ZEC_MIN_ZATS", "1000")?,
             max_zats: num("ZEC_MAX_ZATS", "100000000000")?, // 1000 ZEC
             sync_interval: Duration::from_secs(num("ZEC_SYNC_INTERVAL_SECS", "7")?),
         })
     }
+}
+
+/// Default confirmation depth per network: 1 on regtest (blocks are mined on demand), 10
+/// elsewhere (ZIP 315's depth for outputs received from others).
+pub fn default_min_confirmations(network: zcash_protocol::consensus::NetworkType) -> u32 {
+    match network {
+        zcash_protocol::consensus::NetworkType::Regtest => 1,
+        _ => 10,
+    }
+}
+
+/// ZEC_MIN_CONFIRMATIONS if set, else the old name ZEC_CONFIRMATIONS (with a warning), else the
+/// network default. Must be at least 1.
+fn resolve_min_confirmations(
+    explicit: Option<&str>,
+    legacy: Option<&str>,
+    network: zcash_protocol::consensus::NetworkType,
+) -> Result<u32> {
+    let (name, value) = match (explicit, legacy) {
+        (Some(v), _) => ("ZEC_MIN_CONFIRMATIONS", v),
+        (None, Some(v)) => {
+            eprintln!("warning: ZEC_CONFIRMATIONS is deprecated; use ZEC_MIN_CONFIRMATIONS");
+            ("ZEC_CONFIRMATIONS", v)
+        }
+        (None, None) => return Ok(default_min_confirmations(network)),
+    };
+    let n: u32 = value.trim().parse().with_context(|| format!("{name} must be a whole number"))?;
+    anyhow::ensure!(n >= 1, "{name} must be at least 1");
+    Ok(n)
 }
 
 /// `KEY=value` lines; `#` comments, blank lines and an optional `export ` prefix are skipped,
@@ -93,6 +125,22 @@ fn parse_dotenv(text: &str) -> HashMap<String, String> {
 #[cfg(test)]
 mod tests {
     use super::parse_dotenv;
+
+    #[test]
+    fn min_confirmations_defaults_and_overrides() {
+        use super::{default_min_confirmations, resolve_min_confirmations};
+        use zcash_protocol::consensus::NetworkType::{Main, Regtest, Test};
+        assert_eq!(default_min_confirmations(Regtest), 1);
+        assert_eq!(default_min_confirmations(Main), 10);
+        assert_eq!(default_min_confirmations(Test), 10);
+        assert_eq!(resolve_min_confirmations(None, None, Regtest).unwrap(), 1);
+        assert_eq!(resolve_min_confirmations(None, None, Main).unwrap(), 10);
+        assert_eq!(resolve_min_confirmations(Some("3"), None, Regtest).unwrap(), 3);
+        assert_eq!(resolve_min_confirmations(Some("3"), Some("7"), Main).unwrap(), 3, "new name wins");
+        assert_eq!(resolve_min_confirmations(None, Some("7"), Main).unwrap(), 7, "old name still works");
+        assert!(resolve_min_confirmations(Some("0"), None, Main).is_err());
+        assert!(resolve_min_confirmations(Some("x"), None, Main).is_err());
+    }
 
     #[test]
     fn dotenv_lines() {

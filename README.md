@@ -42,7 +42,7 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
     ZEC_GUARDIAN_TIMEOUT_SECS=30              # per FROST round
     ZEC_PROCESSOR_DB=devnet/processor.sqlite  # quote table zec_deposit_address
     ZEC_GRPC_ADDR=127.0.0.1:50051
-    ZEC_CONFIRMATIONS=1
+    ZEC_MIN_CONFIRMATIONS=1                   # deposit PAID / withdrawal settled at this depth (default 1 on regtest, 10 elsewhere)
     ZEC_MIN_ZATS=1000                         # keep equal to min_mint/max_mint in mintd/config.toml
     ZEC_MAX_ZATS=100000000000
     ZEC_SYNC_INTERVAL_SECS=7

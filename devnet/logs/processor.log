@@ -49,3 +49,28 @@
 2026-10-18T19:43:21.415680Z  INFO zec_processor: payment processor gRPC serving; Ctrl-C to stop addr=127.0.0.1:50051
 2026-10-18T19:43:22.450609Z  INFO zec_processor::backend: replaying settled withdrawals to the mint count=4
 2026-10-19T15:17:57.134780Z  INFO zec_processor::backend: replaying settled withdrawals to the mint count=1
+2026-10-19T17:31:11.274145Z  INFO zec_processor: starting zec-processor cfg=Config { lightwalletd: "http://127.0.0.1:9067", mint_ufvk: "devnet/keys/mint.ufvk", mint_db: "devnet/mint-reserve.sqlite", frost_pubkeys: "devnet/keys/frost-pubkeys.json", guardians: ["http://127.0.0.1:7101", "http://127.0.0.1:7102", "http://127.0.0.1:7103"], guardian_timeout: 30s, processor_db: "devnet/processor.sqlite", grpc_addr: 127.0.0.1:50051, min_confirmations: 3, min_zats: 1000, max_zats: 100000000000, sync_interval: 7s }
+2026-10-19T17:31:11.317885Z  INFO schemerz: Migrating everything
+2026-10-19T17:31:11.337321Z  INFO zec_processor: mint reserve wallet (view-only) address=uregtest1yudx7s9mk0asg94z3zpg8x8fnnvez3rcfqzrs4deduq90gwdrc97fex6x9j3f4weyg4tr2rly6jkjfjr67ye5uqj9ryks5uf3chrx32v
+2026-10-19T17:31:11.345937Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7101 guardian=1 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:31:11.347738Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7102 guardian=2 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:31:11.349522Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7103 guardian=3 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:31:42.846561Z  INFO zec_processor: Orchard proving key ready elapsed=31.494914792s
+2026-10-19T17:31:42.848901Z  INFO zec_processor::backend: sync loop started (deposits + withdrawals) interval=7s confirmations=3
+2026-10-19T17:31:42.849077Z  INFO cdk_payment_processor::proto::server: Starting RPC server 127.0.0.1:50051
+2026-10-19T17:31:42.849096Z  WARN cdk_payment_processor::proto::server: No valid TLS configuration found, starting insecure server
+2026-10-19T17:31:42.850805Z  INFO zec_processor: payment processor gRPC serving; Ctrl-C to stop addr=127.0.0.1:50051
+2026-10-19T17:32:00.862444Z  INFO zec_processor::backend: deposit address issued quote_id=01a15538-61d0-7794-8d9b-ce54428fe284 index=4 zats=3000
+2026-10-19T17:32:11.262497Z  INFO zec_processor::backend: replaying settled withdrawals to the mint count=1
+2026-10-19T17:33:41.968976Z  INFO zec_processor::backend: deposit paid quote_id=01a15538-61d0-7794-8d9b-ce54428fe284 received_zats=3000 confirmations=3
+2026-10-19T17:34:10.452889Z  INFO zec_processor: starting zec-processor cfg=Config { lightwalletd: "http://127.0.0.1:9067", mint_ufvk: "devnet/keys/mint.ufvk", mint_db: "devnet/mint-reserve.sqlite", frost_pubkeys: "devnet/keys/frost-pubkeys.json", guardians: ["http://127.0.0.1:7101", "http://127.0.0.1:7102", "http://127.0.0.1:7103"], guardian_timeout: 30s, processor_db: "devnet/processor.sqlite", grpc_addr: 127.0.0.1:50051, min_confirmations: 1, min_zats: 1000, max_zats: 100000000000, sync_interval: 7s }
+2026-10-19T17:34:10.470670Z  INFO schemerz: Migrating everything
+2026-10-19T17:34:10.486676Z  INFO zec_processor: mint reserve wallet (view-only) address=uregtest1yudx7s9mk0asg94z3zpg8x8fnnvez3rcfqzrs4deduq90gwdrc97fex6x9j3f4weyg4tr2rly6jkjfjr67ye5uqj9ryks5uf3chrx32v
+2026-10-19T17:34:10.488563Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7101 guardian=1 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:34:10.489461Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7102 guardian=2 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:34:10.490124Z  INFO zec_processor::frost_signer: guardian up url=http://127.0.0.1:7103 guardian=3 group_key=c0f1ab267eb9c0beee66916155e7e9127fae91cb08d5a253c05e7ec41060a60f
+2026-10-19T17:34:41.041245Z  INFO zec_processor: Orchard proving key ready elapsed=30.549809583s
+2026-10-19T17:34:41.041620Z  INFO zec_processor::backend: sync loop started (deposits + withdrawals) interval=7s confirmations=1
+2026-10-19T17:34:41.041701Z  INFO cdk_payment_processor::proto::server: Starting RPC server 127.0.0.1:50051
+2026-10-19T17:34:41.041716Z  WARN cdk_payment_processor::proto::server: No valid TLS configuration found, starting insecure server
+2026-10-19T17:34:41.041825Z  INFO zec_processor: payment processor gRPC serving; Ctrl-C to stop addr=127.0.0.1:50051

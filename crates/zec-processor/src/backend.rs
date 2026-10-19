@@ -162,7 +162,7 @@ impl ZecBackend {
             fee: Amount::new(fee, Self::unit()),
             state: MeltQuoteState::Unpaid,
             extra_json: None,
-            estimated_blocks: Some(self.cfg.confirmations),
+            estimated_blocks: Some(self.cfg.min_confirmations),
             fee_options: None,
         })
     }
@@ -473,7 +473,7 @@ impl MintPayment for ZecBackend {
             return Ok(());
         }
         let (wallet, store, events) = (self.wallet.clone(), self.store.clone(), self.events.clone());
-        let (interval, confirmations) = (self.cfg.sync_interval, self.cfg.confirmations);
+        let (interval, confirmations) = (self.cfg.sync_interval, self.cfg.min_confirmations);
         *task = Some(tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -501,7 +501,7 @@ impl MintPayment for ZecBackend {
         // informational (the mint's own min/max come from its config).
         let zec = format!(
             r#"{{"unit":"{UNIT}","min_amount":{},"max_amount":{},"confirmations":{},"pool":"ironwood"}}"#,
-            self.cfg.min_zats, self.cfg.max_zats, self.cfg.confirmations
+            self.cfg.min_zats, self.cfg.max_zats, self.cfg.min_confirmations
         );
         Ok(SettingsResponse {
             unit: UNIT.to_owned(),

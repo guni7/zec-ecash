@@ -29,9 +29,11 @@ backend = "grpcprocessor"
 unit = "zat"
 # Keep equal to zec-processor's ZEC_MIN_ZATS / ZEC_MAX_ZATS in mainnet/.env. Small on purpose:
 # the processor also caps the whole reserve (ZEC_MAX_RESERVE, default 1,000,000 zat).
-min_mint = 1000
+# min_mint 10000: a deposit note of 5,000 zat or less is ZIP 317 dust and can never be spent by a
+# withdrawal, so smaller deposits would be credited but leave the reserve unable to pay out.
+min_mint = 10000
 max_mint = 1000000
-min_melt = 1000
+min_melt = 10000
 max_melt = 1000000
 
 [onchain]

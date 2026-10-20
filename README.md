@@ -203,6 +203,10 @@ so they can't share one Cargo resolve. The wallet CLI uses `cdk-redb` for the sa
 
 ## Mainnet (experimental; real ZEC)
 
+**Deploying: [docs/deploy-mainnet.md](docs/deploy-mainnet.md)** (machines, firewall, the DKG
+ceremony across three machines, guardian TLS and auth, Caddy, start-up, checks before the first
+transaction).
+
 `ZEC_NETWORK=mainnet` switches every binary to Zcash mainnet. Only the network parameters and
 the defaults below differ; every code path is the same as on regtest, which stays the default.
 `ZEC_NETWORK` is read from the real environment only, never from a `.env` file.
@@ -215,7 +219,10 @@ the defaults below differ; every code path is the same as on regtest, which stay
 | `ZEC_MIN_CONFIRMATIONS` | 1 | 10 |
 | new wallet / UFVK birthday | block 2 | chain tip - 100 (stored in the wallet DB) |
 | ports: mintd, processor gRPC, status, guardians, POS | 8085, 50051, 8095, 7101-3, 8090 | +1000: 9085, 51051, 9095, 8101-3, 9090 |
-| mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` |
+| mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` (min deposit/withdrawal 10,000 zat: smaller notes are dust) |
+| guardian transport | plain HTTP on loopback (TLS/auth only if configured) | TLS (`scripts/guardian-ca.sh`) and HMAC-authenticated rounds (`guardian make-auth-key`), both required |
+| start | `scripts/devnet-up.sh` | `scripts/mainnet-up.sh` on each host (its `ZEC_ROLES`), each part under a watchdog |
+| web wallet | Vite dev server, port 5173 | MAINNET badge; disabled unless opened at `ZEC_MINT_URL`; built and served by Caddy (`deploy/Caddyfile.example`) |
 | keys | `scripts/devnet-reset.sh --new-keys` (runs `scripts/devnet-dkg.sh`) | distributed ceremony, one guardian per machine (`docs/deploy-mainnet.md`) |
 
 - Chain access is only the light-wallet gRPC (GetLatestBlock, GetTransaction, GetBlock,
@@ -230,6 +237,11 @@ the defaults below differ; every code path is the same as on regtest, which stay
   `guardian verify` checks all three machines agree. Each guardian writes only its own key share
   (mode 600) and the public key package. `scripts/devnet-dkg.sh` runs the same ceremony on one
   machine for the devnet only and refuses `ZEC_NETWORK=mainnet`.
+- Guardian transport: a guardian's `/round1` and `/round2` take only requests carrying an
+  HMAC-SHA256 (per-guardian secret shared with the processor only) over method, path, timestamp and
+  body, within 60 s and never replayed; the check runs before any nonce is made. On mainnet the
+  guardian serves TLS with a certificate from the operator's private CA (the processor trusts it as
+  `ZEC_GUARDIAN_CA`) and checks quotes at the mint's public `https://` URL.
 - The reserve cap (`ZEC_MAX_RESERVE`, default 1,000,000 zat) refuses deposit quotes that could
   push the reserve past it, counting open quotes; `GET /deposit-quote?amount=` says why.
 - Devnet scripts pin `ZEC_NETWORK=regtest` and stop processes by their devnet ports, so they

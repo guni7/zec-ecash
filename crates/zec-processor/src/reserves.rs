@@ -56,6 +56,64 @@ pub fn read_mint_ledger(path: &Path, unit: &str) -> Result<MintLedger> {
     Ok(MintLedger { issued: n(issued)?, redeemed: n(redeemed)?, pending_melt: n(pending_melt)? })
 }
 
+/// Why a deposit quote is refused. The mint shows every refusal as "Invalid payment request",
+/// so this is also served at `/deposit-quote` for wallets to ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepositRefusal {
+    AmountOutOfRange { amount: u64, min: u64, max: u64 },
+    /// The reserve invariant fails (see [`ReserveStatus`]).
+    ReserveViolated { reserve: u64, required: u64 },
+    /// reserve + open quotes + this amount would pass ZEC_MAX_RESERVE.
+    ReserveCap { cap: u64, reserve: u64, open_quotes: u64, amount: u64 },
+    /// The check itself could not run.
+    CheckFailed(String),
+}
+
+impl DepositRefusal {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AmountOutOfRange { .. } => "amount_out_of_range",
+            Self::ReserveViolated { .. } => "reserve_violated",
+            Self::ReserveCap { .. } => "reserve_cap",
+            Self::CheckFailed(_) => "check_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for DepositRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AmountOutOfRange { amount, min, max } => {
+                write!(f, "amount {amount} zat is outside the mint's deposit limits ({min}..={max} zat)")
+            }
+            Self::ReserveViolated { reserve, required } => write!(
+                f,
+                "deposits are paused: the confirmed reserve ({reserve} zat) is below outstanding ecash plus \
+                 withdrawals in flight ({required} zat); see /reserves"
+            ),
+            Self::ReserveCap { cap, reserve, open_quotes, amount } => write!(
+                f,
+                "reserve cap reached: the reserve holds {reserve} zat and open deposit quotes could add \
+                 {open_quotes} zat, so {amount} zat more would pass the mint's cap of {cap} zat \
+                 (ZEC_MAX_RESERVE); at most {} zat can be deposited now",
+                cap.saturating_sub(reserve.saturating_add(*open_quotes))
+            ),
+            Self::CheckFailed(e) => write!(f, "the deposit check could not run: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DepositRefusal {}
+
+/// The cap rule: refuse when `reserve` (everything the wallet holds on chain) plus what open
+/// quotes could still bring in plus `amount` would exceed `cap`.
+pub fn check_cap(cap: u64, reserve: u64, open_quotes: u64, amount: u64) -> Result<(), DepositRefusal> {
+    if reserve.saturating_add(open_quotes).saturating_add(amount) > cap {
+        return Err(DepositRefusal::ReserveCap { cap, reserve, open_quotes, amount });
+    }
+    Ok(())
+}
+
 /// Amount + fee of every withdrawal that has a built transaction not yet mined.
 pub fn in_flight(store: &QuoteStore) -> Result<u64> {
     use WithdrawalState::*;
@@ -236,6 +294,17 @@ mod tests {
 
     fn ledger(issued: u64, redeemed: u64, pending_melt: u64) -> MintLedger {
         MintLedger { issued, redeemed, pending_melt }
+    }
+
+    #[test]
+    fn cap_counts_reserve_open_quotes_and_the_new_amount() {
+        assert!(check_cap(1_000_000, 900_000, 50_000, 50_000).is_ok(), "exactly at the cap is fine");
+        let e = check_cap(1_000_000, 900_000, 50_000, 50_001).unwrap_err();
+        assert_eq!(e, DepositRefusal::ReserveCap { cap: 1_000_000, reserve: 900_000, open_quotes: 50_000, amount: 50_001 });
+        assert!(e.to_string().contains("at most 50000 zat can be deposited now"), "{e}");
+        assert!(check_cap(1_000_000, 1_200_000, 0, 1).is_err(), "already over: nothing more");
+        let e = check_cap(u64::MAX - 1, u64::MAX, 1, 1).unwrap_err();
+        assert!(e.to_string().contains("at most 0 zat"), "no overflow: {e}");
     }
 
     #[test]

@@ -214,16 +214,18 @@ async fn run(opts: Opts) -> Result<()> {
             let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
             let quote = match wallet.mint_quote(PaymentMethod::from(METHOD), Some(Amount::from(zats)), None, None).await {
                 Ok(q) => q,
-                // The mint reports a refused quote only as "Invalid payment request"; if the
-                // reserve check is what's refusing, say so.
-                Err(e) => match fetch_reserves(&wallet.mint_url.to_string()).await {
-                    Ok((_, v)) if v["state"] == "violated" => bail!(
-                        "the mint refused the deposit quote: deposits are paused because the reserve check \
-                         fails (short by {} zat; run `reserves`). Mint said: {e}",
-                        v["shortfall_zats"].as_u64().unwrap_or(0)
-                    ),
-                    _ => return Err(e.into()),
-                },
+                // The mint reports a refused quote only as "Invalid payment request"; ask the
+                // processor why (limits, the reserve check, the reserve cap).
+                Err(e) => {
+                    let url = format!("{}/deposit-quote?amount={zats}", status_base(&wallet.mint_url.to_string()));
+                    match get_status_json(url).await {
+                        Ok((_, v)) if v["ok"] == false => bail!(
+                            "the mint refused the deposit quote: {}\n(the mint itself only reports: {e})",
+                            v["error"].as_str().unwrap_or("?")
+                        ),
+                        _ => return Err(e.into()),
+                    }
+                }
             };
             println!("quote {}", quote.id);
             println!("Pay {zats} zat to:\n{}", quote.request);

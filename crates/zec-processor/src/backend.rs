@@ -37,7 +37,7 @@ use tokio::{
 use zec_wallet::{Pczt, Signer, Wallet};
 
 use crate::{
-    reserves::{self, ReserveMonitor, ReserveStatus},
+    reserves::{self, DepositRefusal, ReserveMonitor, ReserveStatus},
     config::Config,
     store::{MinedAt, Quote, QuoteStore, Withdrawal, WithdrawalState},
     withdraw::{self, BuiltTx, QuoteRefusal, Reserve, Settled},
@@ -106,18 +106,17 @@ impl ZecBackend {
             return Err(Error::UnsupportedUnit);
         }
         let zats = amount.value();
-        if zats < self.cfg.min_zats || zats > self.cfg.max_zats {
-            return Err(Error::Custom(format!(
-                "amount {zats} zat outside {}..={} zat",
-                self.cfg.min_zats, self.cfg.max_zats
-            )));
-        }
         let expires_at = opts.unix_expiry.unwrap_or_else(|| now() + 3600);
         let quote_id = opts.quote_id.to_string();
 
-        // Holding the wallet lock across reserve+derive keeps address registration and the
-        // quote row consistent; it may wait for a sync pass in progress.
+        // Holding the wallet lock across check+reserve+derive keeps the cap check, address
+        // registration and the quote row consistent (two quotes can't both pass the cap); it
+        // may wait for a sync pass in progress.
         let mut wallet = self.wallet.lock().await;
+        if let Err(r) = self.check_deposit_locked(&mut wallet, zats).await {
+            tracing::warn!(zats, code = r.code(), "refused a deposit quote: {r}");
+            return Err(Error::Custom(r.to_string()));
+        }
         let quote = self
             .store
             .create_quote(&quote_id, zats, expires_at, |index| wallet.address_at(index))
@@ -166,6 +165,28 @@ impl ZecBackend {
             estimated_blocks: Some(self.cfg.min_confirmations),
             fee_options: None,
         })
+    }
+
+    /// Whether a deposit quote for `zats` would be accepted now (served at `/deposit-quote`).
+    pub async fn check_deposit(&self, zats: u64) -> Result<(), DepositRefusal> {
+        let mut wallet = self.wallet.lock().await;
+        self.check_deposit_locked(&mut wallet, zats).await
+    }
+
+    /// Limits, the reserve invariant, then the reserve cap. The caller holds the wallet lock.
+    /// (`&mut` so the future stays `Send`: the wallet is not `Sync`.)
+    async fn check_deposit_locked(&self, wallet: &mut Wallet, zats: u64) -> Result<(), DepositRefusal> {
+        let (min, max) = (self.cfg.min_zats, self.cfg.max_zats);
+        if zats < min || zats > max {
+            return Err(DepositRefusal::AmountOutOfRange { amount: zats, min, max });
+        }
+        if let Some(v) = self.reserves.violation().await {
+            return Err(DepositRefusal::ReserveViolated { reserve: v.reserve_zats, required: v.required_zats });
+        }
+        // Everything mined into the reserve (depth 1), plus what open quotes could still add.
+        let reserve = wallet.confirmed_reserve(1).map_err(|e| DepositRefusal::CheckFailed(format!("{e:#}")))?.zats;
+        let open = self.store.open_deposit_zats(now()).map_err(|e| DepositRefusal::CheckFailed(format!("{e:#}")))?;
+        reserves::check_cap(self.cfg.max_reserve, reserve, open, zats)
     }
 
     /// Validates a withdrawal and estimates its fee, without recording anything. Shared by the
@@ -594,15 +615,6 @@ impl MintPayment for ZecBackend {
         &self,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
-        if let Some(v) = self.reserves.violation().await {
-            let e = Error::Custom(format!(
-                "mint quotes are paused: the confirmed reserve ({} zat) is below outstanding ecash plus \
-                 withdrawals in flight ({} zat); see /reserves",
-                v.reserve_zats, v.required_zats
-            ));
-            tracing::warn!("refused a deposit quote: {e}");
-            return Err(e);
-        }
         // The gRPC server replaces our error with "Could not create invoice", so log it here.
         self.create_deposit(options)
             .await

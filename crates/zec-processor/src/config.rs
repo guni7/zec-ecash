@@ -31,6 +31,9 @@ pub struct Config {
     pub min_confirmations: u32,
     pub min_zats: u64,
     pub max_zats: u64,
+    /// Safety cap (ZEC_MAX_RESERVE, zats): refuse deposit quotes that could push the reserve
+    /// past it (see `reserves::check_cap`).
+    pub max_reserve: u64,
     pub sync_interval: Duration,
     /// cdk-mintd's SQLite DB, read (read-only) for the reserve check's issued/redeemed totals.
     pub cdk_mint_db: PathBuf,
@@ -88,6 +91,7 @@ impl Config {
             )?,
             min_zats: num("ZEC_MIN_ZATS", "1000")?,
             max_zats: num("ZEC_MAX_ZATS", "100000000000")?, // 1000 ZEC
+            max_reserve: num("ZEC_MAX_RESERVE", "1000000")?,  // 0.01 ZEC
             sync_interval: Duration::from_secs(num("ZEC_SYNC_INTERVAL_SECS", "7")?),
             cdk_mint_db: path("ZEC_CDK_MINT_DB", "mint/cdk-mintd.sqlite"),
             status_addr: get("ZEC_STATUS_ADDR", &format!("127.0.0.1:{}", port(8095)))

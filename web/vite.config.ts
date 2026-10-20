@@ -56,6 +56,10 @@ export default defineConfig({
         target: process.env.ZEC_STATUS_UPSTREAM ?? 'http://127.0.0.1:8095',
         changeOrigin: true,
       },
+      '/deposit-quote': {
+        target: process.env.ZEC_STATUS_UPSTREAM ?? 'http://127.0.0.1:8095',
+        changeOrigin: true,
+      },
       '/withdrawal-quote': {
         target: process.env.ZEC_STATUS_UPSTREAM ?? 'http://127.0.0.1:8095',
         changeOrigin: true,

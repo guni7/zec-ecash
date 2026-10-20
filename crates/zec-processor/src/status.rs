@@ -1,5 +1,7 @@
 //! Plain-HTTP status endpoints (loopback; the web proxy exposes them over HTTPS):
 //! - `GET /reserves`: the reserve check (see `reserves`).
+//! - `GET /deposit-quote?amount=<zat>`: whether a deposit quote would be accepted (limits, the
+//!   reserve check, the ZEC_MAX_RESERVE cap), and if not, why.
 //! - `GET /withdrawal-quote?amount=<zat>&address=<ua>`: whether a withdrawal can be quoted, and
 //!   if not, why. cdk-mintd 0.18.2 reports every failed `zec` melt quote to the wallet as "Unit
 //!   unsupported" (and its gRPC server drops our message before that), so wallets ask here.
@@ -16,7 +18,11 @@ use axum::{
 use serde::Deserialize;
 use serde_json::json;
 
-use crate::{backend::ZecBackend, reserves::ReserveMonitor, withdraw::QuoteRefusal};
+use crate::{
+    backend::ZecBackend,
+    reserves::{DepositRefusal, ReserveMonitor},
+    withdraw::QuoteRefusal,
+};
 
 #[derive(Clone)]
 struct AppState {
@@ -32,6 +38,31 @@ async fn reserves(State(s): State<AppState>) -> impl IntoResponse {
 struct QuoteQuery {
     amount: u64,
     address: String,
+}
+
+#[derive(Deserialize)]
+struct DepositQuery {
+    amount: u64,
+}
+
+/// 200 `{"ok":true,"amount"}`, or 422 `{"ok":false,"code","error",...}`.
+async fn deposit_quote(State(s): State<AppState>, Query(q): Query<DepositQuery>) -> impl IntoResponse {
+    match s.backend.check_deposit(q.amount).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true, "amount": q.amount }))),
+        Err(r) => (StatusCode::UNPROCESSABLE_ENTITY, Json(deposit_refusal_json(&r))),
+    }
+}
+
+fn deposit_refusal_json(r: &DepositRefusal) -> serde_json::Value {
+    let mut v = json!({ "ok": false, "code": r.code(), "error": r.to_string() });
+    if let DepositRefusal::ReserveCap { cap, reserve, open_quotes, amount } = r {
+        v["cap"] = json!(cap);
+        v["reserve"] = json!(reserve);
+        v["open_quotes"] = json!(open_quotes);
+        v["max_amount_now"] = json!(cap.saturating_sub(reserve.saturating_add(*open_quotes)));
+        v["amount"] = json!(amount);
+    }
+    v
 }
 
 /// 200 `{"ok":true,"amount","fee"}`, or 422 `{"ok":false,"code","error",...}`.
@@ -56,11 +87,12 @@ pub async fn serve(addr: SocketAddr, monitor: ReserveMonitor, backend: Arc<ZecBa
     let app = Router::new()
         .route("/reserves", get(reserves))
         .route("/withdrawal-quote", get(withdrawal_quote))
+        .route("/deposit-quote", get(deposit_quote))
         .with_state(AppState { monitor, backend });
     let listener = tokio::net::TcpListener::bind(addr)
         .await
         .with_context(|| format!("cannot listen on {addr} for the status endpoints"))?;
-    tracing::info!(%addr, "status endpoints at http://{addr}/reserves and /withdrawal-quote");
+    tracing::info!(%addr, "status endpoints at http://{addr}/reserves, /deposit-quote and /withdrawal-quote");
     axum::serve(listener, app).await.context("status server stopped")
 }
 

@@ -136,6 +136,19 @@ impl QuoteStore {
         Ok(quote)
     }
 
+    /// What open deposit quotes could still bring in: for every quote not yet paid and not
+    /// expired at `now` (unix seconds), its amount minus what it has received so far.
+    pub fn open_deposit_zats(&self, now: u64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let sum: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(MAX(amount_zats - received_zats, 0)), 0) FROM zec_deposit_address
+             WHERE paid_emitted = 0 AND expires_at > ?1",
+            [now as i64],
+            |r| r.get(0),
+        )?;
+        Ok(sum.max(0) as u64)
+    }
+
     pub fn quote(&self, quote_id: &str) -> Result<Option<Quote>> {
         let mut conn = self.conn.lock().unwrap();
         let tx = conn.transaction()?;

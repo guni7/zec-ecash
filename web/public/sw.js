@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (['/mint', '/pos', '/reserves', '/withdrawal-quote'].some((p) => url.pathname.startsWith(p))) return;
+  if (['/mint', '/pos', '/reserves', '/deposit-quote', '/withdrawal-quote'].some((p) => url.pathname.startsWith(p))) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

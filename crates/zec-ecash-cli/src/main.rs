@@ -375,7 +375,11 @@ async fn reserves(mint_url: &str) -> Result<()> {
     let l = &v["ledger"];
     println!(
         "reserve check: {}   (chain height {}, depth {}, checked {age} s ago)",
-        if state == "ok" { "OK" } else { "VIOLATED" },
+        match state {
+            "ok" => "OK",
+            "operator_action_required" => "OK, but OPERATOR ACTION NEEDED",
+            _ => "VIOLATED",
+        },
         n("chain_height"),
         n("min_confirmations")
     );
@@ -392,8 +396,22 @@ async fn reserves(mint_url: &str) -> Result<()> {
     if let Some(e) = v["error"].as_str() {
         println!("latest check could not run: {e}");
     }
-    if state == "ok" {
+    let actions = v["operator_action"].as_array().cloned().unwrap_or_default();
+    for a in &actions {
+        println!(
+            "OPERATOR ACTION NEEDED: withdrawal {} ({} zat to {}): {}",
+            a["quote_id"].as_str().unwrap_or("?"),
+            a["amount_zats"].as_u64().unwrap_or(0),
+            a["address"].as_str().unwrap_or("?"),
+            a["reason"].as_str().unwrap_or("?")
+        );
+    }
+    if !actions.is_empty() {
+        println!("(after dealing with one: zec-processor resolve <quote_id>)");
+    }
+    if state == "ok" || state == "operator_action_required" {
         println!("surplus                  {:>14} zat", n("reserve_zats") - n("required_zats"));
+        ensure!(actions.is_empty(), "{} withdrawal(s) need an operator", actions.len());
         Ok(())
     } else {
         bail!("reserve short by {} zat: the mint refuses new deposit quotes until it is restored", n("shortfall_zats"))

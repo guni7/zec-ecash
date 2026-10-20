@@ -90,7 +90,16 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
   from a dropped block back in its mempool). It settles PAID only once the block it is in now is
   `ZEC_MIN_CONFIRMATIONS` deep. A withdrawal already PAID stays watched for 100 blocks; if its
   block disappears it is logged as `REORG AFTER PAID` and rebroadcast (the mint can't undo PAID,
-  so raise the depth). Try it: `curl -s 127.0.0.1:18232 -d '{"method":"invalidateblock","params":["<hash>"]}'`.
+  so raise the depth). If such a withdrawal also passes its expiry height without being mined
+  again, it can never be mined: the processor logs `CRITICAL` with the quote id, amount and
+  address, stops watching and retrying it, and lists it on `/reserves` (state
+  `operator_action_required`, HTTP 503; `zec-ecash-cli reserves` prints it and exits 1). Pay
+  the recipient by other means, then `cargo run -p zec-processor -- resolve <quote_id>`.
+  Try reorgs on the devnet: `curl -s 127.0.0.1:18232 -d '{"method":"invalidateblock","params":["<hash>"]}'`.
+- Chain access: the processor and wallets use only the light-wallet gRPC (GetLatestBlock,
+  GetTransaction, GetBlock, SendTransaction), so a remote lightwalletd is enough. zebrad's
+  JSON-RPC is used only for regtest mining (`devnet/mine.sh`) and the reorg test above;
+  `devnet-up.sh` reads the tip with `devwallet tip`.
 - zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
 - Signing: `make_payment` builds the PCZT and returns Pending; FROST signing runs in the
   background (the mint locks the quote during `make_payment`, and guardians read the quote

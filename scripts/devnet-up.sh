@@ -8,13 +8,10 @@
 set -eu
 cd "$(dirname "$0")/.."
 K=devnet/keys
-RPC=http://127.0.0.1:18232/
-
-height() {
-  curl -s -m 2 -H 'content-type: application/json' \
-    --data-binary '{"jsonrpc":"2.0","id":1,"method":"getblockcount","params":[]}' "$RPC" \
-    | sed -n 's/.*"result":\([0-9]*\).*/\1/p'
-}
+# Chain queries go over the light-wallet gRPC (devwallet tip = GetLatestBlock), like everything
+# else; zebrad's JSON-RPC is used only by devnet/mine.sh (generate).
+cargo build -q -p devwallet
+height() { ./target/debug/devwallet tip 2>/dev/null; }
 port_open() { nc -z 127.0.0.1 "$1" 2>/dev/null; }
 zebrad_up() { [ -n "$(height)" ]; }
 mintd_up() { curl -s -m 2 http://127.0.0.1:8085/v1/info >/dev/null; }

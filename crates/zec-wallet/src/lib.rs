@@ -579,12 +579,7 @@ impl Wallet {
     /// The node's current chain tip height (which drops after a reorg to a shorter chain, while
     /// the wallet's own scanned height does not).
     pub async fn node_tip(&mut self) -> Result<u32> {
-        let tip = connect(&self.lightwalletd)
-            .await?
-            .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
-            .await?
-            .into_inner();
-        u32::try_from(tip.height).context("tip height out of range")
+        chain_tip(&self.lightwalletd).await
     }
 
     /// Where the node has `txid` in its current main chain, asked now (not as of the last
@@ -608,7 +603,7 @@ impl Wallet {
             .await
             .with_context(|| format!("cannot fetch block {height}"))?
             .into_inner();
-        // Display order, as zebrad's getblockhash prints it.
+        // Display order (as block explorers print it).
         let block_hash = hex::encode(block.hash.iter().rev().copied().collect::<Vec<u8>>());
         Ok(Some(TxInclusion { height, block_hash }))
     }
@@ -651,6 +646,16 @@ pub struct TxInclusion {
 fn symmetric_policy(n: u32) -> Result<ConfirmationsPolicy> {
     let n = std::num::NonZeroU32::new(n).context("confirmation depth must be at least 1")?;
     Ok(ConfirmationsPolicy::new_symmetrical(n, true))
+}
+
+/// The light-wallet server's chain tip height (GetLatestBlock).
+pub async fn chain_tip(lightwalletd: &str) -> Result<u32> {
+    let tip = connect(lightwalletd)
+        .await?
+        .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
+        .await?
+        .into_inner();
+    u32::try_from(tip.height).context("tip height out of range")
 }
 
 /// Parses a txid in its usual display form (byte-reversed hex).

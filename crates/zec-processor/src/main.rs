@@ -6,6 +6,8 @@
 //! FROST guardians; the processor's wallet is view-only and it holds no key share.
 //! Configure with ZEC_* variables or `.env` (see config.rs), then:
 //!   cargo run -p zec-processor -- make-ufvk   # once, after the DKG: writes devnet/keys/mint.ufvk
+//!   cargo run -p zec-processor -- resolve <quote_id>   # clear an operator-action flag once a
+//!                                                       # person has dealt with it (see /reserves)
 //!   cargo run -p zec-processor
 mod backend;
 mod config;
@@ -34,6 +36,18 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("make-ufvk") {
         return make_ufvk(&cfg);
+    }
+    if std::env::args().nth(1).as_deref() == Some("resolve") {
+        let quote_id = std::env::args().nth(2).context("usage: zec-processor resolve <quote_id>")?;
+        let store = store::QuoteStore::open(&cfg.processor_db)?;
+        let w = store.withdrawal(&quote_id)?.with_context(|| format!("no withdrawal {quote_id}"))?;
+        let reason = store
+            .resolve_operator_action(&quote_id)?
+            .with_context(|| format!("withdrawal {quote_id} is not flagged (or already resolved)"))?;
+        tracing::warn!(%quote_id, %reason, "operator action resolved by hand");
+        println!("cleared {quote_id} ({} zat to {}): {reason}", w.amount_zats, w.address);
+        println!("It is not watched or retried any more; pay the recipient by other means if needed.");
+        return Ok(());
     }
     tracing::info!(?cfg, "starting zec-processor");
     // Fail loudly: the processor never generates or replaces the reserve's keys.

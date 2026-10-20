@@ -433,7 +433,9 @@ async fn check_reserves(
     let reserve = wallet.lock().await.confirmed_reserve(min_confirmations)?;
     let ledger = reserves::read_mint_ledger(cdk_mint_db, UNIT)?;
     let in_flight = reserves::in_flight(store)?;
-    Ok(reserves::evaluate(reserve.zats, ledger, in_flight, reserve.tip, min_confirmations, now()))
+    let mut status = reserves::evaluate(reserve.zats, ledger, in_flight, reserve.tip, min_confirmations, now());
+    status.operator_action = reserves::operator_actions(store)?;
+    Ok(status)
 }
 
 /// One pass: sync the reserve wallet, credit new notes, emit events for newly paid quotes;
@@ -511,6 +513,15 @@ async fn watch_withdrawals(
                      (raise ZEC_MIN_CONFIRMATIONS if this happens)"
                 );
                 resend.extend(w.txid);
+            }
+            Settled::PaidButExpiredUnmined { w, was } => {
+                tracing::error!(
+                    quote_id = %w.quote_id, amount_zats = w.amount_zats, address = %w.address, txid = ?w.txid,
+                    was_height = was.height, was_block = %was.block_hash, expiry = ?w.expiry_height, tip,
+                    "CRITICAL: withdrawal reported PAID was reorged out and expired unmined; the recipient \
+                     was NOT paid. Not retrying: operator action needed (see /reserves; clear with \
+                     `zec-processor resolve <quote_id>`)"
+                );
             }
         }
     }

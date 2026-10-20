@@ -84,6 +84,32 @@ pub struct ReserveStatus {
     pub min_confirmations: u32,
     /// Unix seconds.
     pub checked_at: u64,
+    /// Withdrawals the processor gave up on; a person must act (see `zec-processor resolve`).
+    pub operator_action: Vec<OperatorAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorAction {
+    pub quote_id: String,
+    pub amount_zats: u64,
+    pub address: String,
+    pub txid: Option<String>,
+    pub reason: String,
+}
+
+/// Rows flagged in the store, for [`ReserveStatus::operator_action`].
+pub fn operator_actions(store: &QuoteStore) -> Result<Vec<OperatorAction>> {
+    Ok(store
+        .needing_operator_action()?
+        .into_iter()
+        .map(|w| OperatorAction {
+            quote_id: w.quote_id,
+            amount_zats: w.amount_zats,
+            address: w.address,
+            txid: w.txid,
+            reason: w.operator_action.unwrap_or_default(),
+        })
+        .collect())
 }
 
 pub fn evaluate(
@@ -107,6 +133,7 @@ pub fn evaluate(
         chain_height,
         min_confirmations,
         checked_at,
+        operator_action: vec![],
     }
 }
 
@@ -173,7 +200,8 @@ impl ReserveMonitor {
 
 #[derive(Serialize)]
 struct Body {
-    /// "ok", "violated" or "unknown" (no completed check yet).
+    /// "violated", "operator_action_required" (invariant holds, but a withdrawal needs a
+    /// person), "ok", or "unknown" (no completed check yet).
     state: &'static str,
     #[serde(flatten)]
     status: Option<ReserveStatus>,
@@ -182,12 +210,13 @@ struct Body {
 }
 
 impl ReserveMonitor {
-    /// The `/reserves` response: 200 when ok, 503 when violated or not yet checked.
+    /// The `/reserves` response: 200 when ok, 503 otherwise.
     pub async fn report(&self) -> (StatusCode, Json<serde_json::Value>) {
         let m = self.inner.read().await;
         let state = match &m.last {
-            Some(s) if s.ok => "ok",
-            Some(_) => "violated",
+            Some(s) if !s.ok => "violated",
+            Some(s) if !s.operator_action.is_empty() => "operator_action_required",
+            Some(_) => "ok",
             None => "unknown",
         };
         let code = if state == "ok" { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };

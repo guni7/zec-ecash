@@ -5,6 +5,7 @@
 //!   cargo run -p devwallet -- sync                    # scan to the chain tip
 //!   cargo run -p devwallet -- balance                 # sync, then spendable/pending per pool
 //!   cargo run -p devwallet -- send <address> <zats>   # sync, build, prove, sign, broadcast
+//!   cargo run -p devwallet -- tip                     # the light-wallet server's tip height (no wallet)
 //!
 //! Global flags (before the command):
 //!   --seed <path>          default devnet/keys/user-wallet.seed (keys survive resets)
@@ -23,7 +24,7 @@ use anyhow::{Context, Result, bail};
 use zec_wallet::{PoolBalance, Wallet};
 
 const USAGE: &str = "usage: devwallet [--seed <path> | --ufvk <path>] [--db <path>] [--lightwalletd <url>] \
-                     <new|address|sync|balance|send <address> <zats>>   (run from the zec-ecash folder)";
+                     <new|address|sync|balance|send <address> <zats>|tip>   (run from the zec-ecash folder)";
 
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -77,6 +78,7 @@ async fn main() -> Result<()> {
     }
 
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        ["tip"] => println!("{}", zec_wallet::chain_tip(&lightwalletd).await?),
         ["new"] => {
             zec_wallet::create_seed(&seed_path)?;
             println!("Created {} (regtest only, keep it out of git)", seed_path.display());

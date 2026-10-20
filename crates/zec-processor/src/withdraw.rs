@@ -217,6 +217,9 @@ pub enum Settled {
     /// Already reported PAID, but its block was replaced and it is no longer mined. The mint
     /// can't take PAID back; rebroadcast it so it is mined again.
     ReorgedAfterPaid { w: Withdrawal, was: MinedAt },
+    /// Already reported PAID, reorged out, and now past its expiry height unmined: it can never
+    /// be mined, so the user was not paid. Flagged for a person; no automatic retry.
+    PaidButExpiredUnmined { w: Withdrawal, was: MinedAt },
 }
 
 /// Txids the watcher must look up on the node at `tip`: every BROADCAST row, and MINED rows
@@ -225,6 +228,7 @@ pub fn txids_to_watch(store: &QuoteStore, tip: u32) -> Result<Vec<String>> {
     Ok(store
         .withdrawals_in(&[Broadcast, Mined])?
         .into_iter()
+        .filter(|w| w.operator_action.is_none())
         .filter(|w| w.state == Broadcast || w.mined_at.as_ref().is_some_and(|m| tip.saturating_sub(m.height) < REORG_WATCH_DEPTH))
         .filter_map(|w| w.txid)
         .collect())
@@ -242,11 +246,27 @@ pub fn settle(
     let mut settled = vec![];
     for w in store.withdrawals_in(&[Broadcast, Mined])? {
         let Some(now) = w.txid.as_deref().and_then(|t| on_chain.get(t)) else { continue };
+        if w.operator_action.is_some() {
+            continue; // a person has it
+        }
         if w.state == Mined {
             match (&w.mined_at, now) {
                 (Some(was), None) => {
                     let was = was.clone();
-                    settled.push(Settled::ReorgedAfterPaid { w, was });
+                    let expiry = w.expiry_height.unwrap_or(0);
+                    if expiry != 0 && tip > expiry {
+                        let reason = format!(
+                            "reported PAID, but its block {} at height {} was reorged out and the \
+                             transaction expired at height {expiry} without being mined again: the \
+                             recipient was not paid",
+                            was.block_hash, was.height
+                        );
+                        store.set_operator_action(&w.quote_id, Some(&reason))?;
+                        let w = store.withdrawal(&w.quote_id)?.unwrap_or(w);
+                        settled.push(Settled::PaidButExpiredUnmined { w, was });
+                    } else {
+                        settled.push(Settled::ReorgedAfterPaid { w, was });
+                    }
                 }
                 (was, Some(m)) if was.as_ref() != Some(m) => store.set_mined_at(&w.quote_id, Some(m))?,
                 _ => {}
@@ -379,6 +399,7 @@ mod tests {
             expiry_height: None,
             updated_at: 0,
             mined_at: None,
+            operator_action: None,
         };
         for s in [Built, Signing, Broadcast] {
             w.state = s;
@@ -504,6 +525,35 @@ mod tests {
         assert!(settle(&store, 101, 1, &chain(Some(at(101, "bb")))).unwrap().is_empty());
         assert_eq!(row(&store, "q").mined_at, Some(at(101, "bb")));
         assert!(txids_to_watch(&store, 101 + REORG_WATCH_DEPTH).unwrap().is_empty(), "deep enough: no longer watched");
+    }
+
+    #[tokio::test]
+    async fn paid_then_reorged_out_past_expiry_needs_an_operator_and_is_not_retried() {
+        let store = store_with("q", 10_000);
+        let mut reserve = FakeReserve { fee: 10_000, expiry: 140, ..Default::default() };
+        make_payment(&store, &mut reserve, "q", None).await.unwrap();
+        assert!(matches!(settle(&store, 100, 1, &chain(Some(at(100, "aa")))).unwrap().as_slice(), [Settled::Paid(_)]));
+
+        // Reorged out before expiry: still retried (rebroadcast), not flagged.
+        assert!(matches!(settle(&store, 140, 1, &chain(None)).unwrap().as_slice(), [Settled::ReorgedAfterPaid { .. }]));
+        assert_eq!(row(&store, "q").operator_action, None);
+
+        // Past expiry and still unmined: it can never be mined. Flagged once, with the reason.
+        let s = settle(&store, 141, 1, &chain(None)).unwrap();
+        assert!(matches!(s.as_slice(), [Settled::PaidButExpiredUnmined { w, was }]
+            if w.operator_action.as_deref().is_some_and(|r| r.contains("not paid")) && *was == at(100, "aa")));
+        assert_eq!(row(&store, "q").state, Mined, "the mint's PAID stands");
+        assert_eq!(store.needing_operator_action().unwrap().len(), 1);
+
+        // No automatic retry: no longer watched, and settle ignores it.
+        assert!(txids_to_watch(&store, 142).unwrap().is_empty());
+        assert!(settle(&store, 142, 1, &chain(None)).unwrap().is_empty());
+
+        // An operator resolves it: off the list, and still never retried.
+        assert!(store.resolve_operator_action("q").unwrap().is_some());
+        assert!(store.needing_operator_action().unwrap().is_empty());
+        assert!(txids_to_watch(&store, 143).unwrap().is_empty());
+        assert!(store.resolve_operator_action("q").unwrap().is_none(), "only once");
     }
 
     #[tokio::test]

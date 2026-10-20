@@ -7,6 +7,8 @@
 # Already-running services are left alone.
 set -eu
 cd "$(dirname "$0")/.."
+# Devnet scripts always work on regtest, whatever the shell's ZEC_NETWORK says.
+export ZEC_NETWORK=regtest
 K=devnet/keys
 # Chain queries go over the light-wallet gRPC (devwallet tip = GetLatestBlock), like everything
 # else; zebrad's JSON-RPC is used only by devnet/mine.sh (generate).

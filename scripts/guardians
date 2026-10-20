@@ -4,6 +4,18 @@
 #   scripts/guardians start [1 2 3]     scripts/guardians stop [1 2 3]
 set -eu
 cd "$(dirname "$0")/.."
+# Devnet scripts always work on regtest, whatever the shell's ZEC_NETWORK says.
+export ZEC_NETWORK=regtest
+stop_port() { # stop_port <port> <name>: stop whatever listens on this devnet port (SIGTERM, wait,
+  # KILL). By port, not by process name, so MAINNET processes (ports +1000) are never touched.
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  kill -TERM $pids 2>/dev/null || true
+  i=0; while [ -n "$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null)" ] && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+  echo "stopped $2"
+}
 cmd="${1:-start}"; shift || true
 ids="${*:-1 2 3}"
 case "$cmd" in
@@ -15,7 +27,8 @@ case "$cmd" in
     done ;;
   stop)
     for id in $ids; do
-      pkill -TERM -f "target/debug/guardian --id $id serve" && echo "guardian $id stopped" || echo "guardian $id not running"
+      if [ -n "$(lsof -nP -iTCP:710$id -sTCP:LISTEN -t 2>/dev/null)" ]; then stop_port 710$id "guardian $id"
+      else echo "guardian $id not running"; fi
     done ;;
   *) echo "usage: scripts/guardians start|stop [ids]" >&2; exit 1 ;;
 esac

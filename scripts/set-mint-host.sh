@@ -17,6 +17,8 @@
 # First-time setup (no web/certs/rootCA.pem yet): run with --init to adopt mkcert's root.
 set -eu
 cd "$(dirname "$0")/.."
+# Devnet scripts always work on regtest, whatever the shell's ZEC_NETWORK says.
+export ZEC_NETWORK=regtest
 
 INIT=0
 if [ "${1:-}" = "--init" ]; then INIT=1; shift; fi
@@ -76,7 +78,17 @@ stop() {
   pkill -TERM -f "$1" || true
   i=0; while pgrep -f "$1" >/dev/null && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
 }
-stop 'cdk-mintd'
+stop_port() { # stop_port <port> <name>: stop whatever listens on this devnet port (SIGTERM, wait,
+  # KILL). By port, not by process name, so MAINNET processes (ports +1000) are never touched.
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  kill -TERM $pids 2>/dev/null || true
+  i=0; while [ -n "$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null)" ] && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+  echo "stopped $2"
+}
+stop_port 8085 cdk-mintd            # the devnet mint only (a MAINNET mint listens on 9085)
 stop 'web/node_modules/.bin/vite'   # the Vite dev server (reloads the new certificate on start)
 ./scripts/devnet-up.sh | sed -n '/^cdk-mintd:/,$p'
 

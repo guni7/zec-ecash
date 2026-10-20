@@ -1,0 +1,45 @@
+# MAINNET cdk-mintd config (real ZEC). Stock cdk-mintd; all ZEC logic is in zec-processor.
+# Its own work dir and ports, so it can never talk to the devnet's processor (or vice versa):
+#   CDK_MINTD_MNEMONIC=<24 words, from mainnet/.env only> \
+#     cdk-mintd -w mainnet/mint --config mintd/config.mainnet.toml
+# with zec-processor started as ZEC_NETWORK=mainnet (gRPC 127.0.0.1:51051).
+# The mnemonic is the mint's ecash signing key: generate it once, keep it in mainnet/.env (never
+# in .env, which is the devnet's), back it up, and never reuse the devnet's.
+
+[info]
+# The URL wallets use and tokens carry. Set this to the mint's real public HTTPS URL before use.
+url = "https://CHANGE-ME.example/mint/"
+listen_host = "127.0.0.1"
+listen_port = 9085
+mnemonic = "env:CDK_MINTD_MNEMONIC"
+
+[info.quote_ttl]
+mint_ttl = 3600   # mainnet deposits wait for ZEC_MIN_CONFIRMATIONS (default 10, ~13 min)
+melt_ttl = 600
+
+[mint_info]
+name = "zec-ecash MAINNET mint"
+description = "MAINNET ZEC ecash (real funds). Ironwood reserves, 2-of-3 FROST withdrawals. Experimental: small amounts only."
+
+[database]
+engine = "sqlite"
+
+[payment_backend]
+backend = "grpcprocessor"
+unit = "zat"
+# Keep equal to zec-processor's ZEC_MIN_ZATS / ZEC_MAX_ZATS in mainnet/.env. Small on purpose:
+# the processor also caps the whole reserve (ZEC_MAX_RESERVE, default 1,000,000 zat).
+min_mint = 1000
+max_mint = 1000000
+min_melt = 1000
+max_melt = 1000000
+
+[onchain]
+onchain_backend = "none"
+
+[grpc_processor]
+supported_units = ["zat"]
+address = "127.0.0.1"
+port = 51051
+# zec-processor serves plaintext gRPC; acceptable only because both run on loopback.
+allow_insecure = true

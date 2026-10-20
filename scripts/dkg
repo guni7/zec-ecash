@@ -7,6 +7,8 @@
 # Normally run by scripts/devnet-reset.sh --new-keys.
 set -eu
 cd "$(dirname "$0")/.."
+# Devnet scripts always work on regtest, whatever the shell's ZEC_NETWORK says.
+export ZEC_NETWORK=regtest
 K=devnet/keys
 for f in $K/guardian-1.key $K/guardian-2.key $K/guardian-3.key $K/frost-pubkeys.json $K/mint.ufvk; do
   if [ -e "$f" ]; then

@@ -2,7 +2,8 @@
 
 A Cashu ecash mint for ZEC: stock `cdk-mintd` plus our `zec-processor` over CDK's gRPC
 payment-processor API. Reserves sit in the Ironwood shielded pool; withdrawals are
-signed 2-of-3 with FROST (RedPallas).
+signed 2-of-3 with FROST (RedPallas). Runs on a local regtest devnet by default; mainnet
+support is experimental (see "Mainnet").
 
 ## Prerequisites
 - Rust stable (`rustup`), and `protoc`: `apt-get install protobuf-compiler` or `brew install protobuf`
@@ -32,9 +33,11 @@ After changing `mintd/config.toml`, run `cdk-mintd -w devnet/mint config apply -
 Use only `devnet/mint` as the mint's work dir: a second mint database on the same URL has
 different keysets, and wallets that used one fail against the other ("Unknown Keyset").
 
-zec-processor settings (environment, or `.env` in the repo root; defaults shown):
+zec-processor settings (environment, or `.env` in the repo root; regtest defaults shown;
+see "Mainnet" for how they change there):
 
-    ZEC_LIGHTWALLETD=http://127.0.0.1:9067
+    ZEC_NETWORK=regtest                       # regtest | mainnet; from the real environment only
+    ZEC_LWD_URL=http://127.0.0.1:9067         # light-wallet gRPC; https:// uses TLS (old name ZEC_LIGHTWALLETD)
     ZEC_MINT_UFVK=devnet/keys/mint.ufvk       # view-only reserve key; startup fails if missing
     ZEC_MINT_DB=devnet/mint-reserve.sqlite
     ZEC_FROST_PUBKEYS=devnet/keys/frost-pubkeys.json   # startup fails if missing
@@ -47,7 +50,8 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
     ZEC_MAX_ZATS=100000000000
     ZEC_SYNC_INTERVAL_SECS=7
     ZEC_CDK_MINT_DB=devnet/mint/cdk-mintd.sqlite   # read-only: issued/redeemed for the reserve check
-    ZEC_STATUS_ADDR=127.0.0.1:8095            # GET /reserves, /withdrawal-quote (also proxied at https://<host>:5173/...)
+    ZEC_STATUS_ADDR=127.0.0.1:8095            # GET /reserves, /deposit-quote, /withdrawal-quote (also proxied at https://<host>:5173/...)
+    ZEC_MAX_RESERVE=1000000                   # refuse deposit quotes that could push the reserve past this (zats)
 
 - The processor speaks plaintext gRPC, so mintd needs `allow_insecure = true`; keep both on loopback.
 - Failed withdrawal quotes: cdk-mintd 0.18.2 reports *every* failed `zec` melt quote to the
@@ -196,6 +200,46 @@ via `SSL_CERT_FILE`, plus the OS store), so `mkcert -install` on the Mac is opti
 ## Why the mint is a separate process
 `cdk-sqlite` / `cdk-axum` and the Zcash crates conflict (`libsqlite3-sys`, `sha2`),
 so they can't share one Cargo resolve. The wallet CLI uses `cdk-redb` for the same reason.
+
+## Mainnet (experimental; real ZEC)
+
+`ZEC_NETWORK=mainnet` switches every binary to Zcash mainnet. Only the network parameters and
+the defaults below differ; every code path is the same as on regtest, which stays the default.
+`ZEC_NETWORK` is read from the real environment only, never from a `.env` file.
+
+| | regtest | MAINNET |
+|---|---|---|
+| state (keys, DBs, mint work dir, logs) | `devnet/` | `mainnet/` (gitignored) |
+| settings file | `.env` + shell | `mainnet/.env` only (never `.env` or the shell, which may hold the devnet's) |
+| light-wallet server (`ZEC_LWD_URL`) | `http://127.0.0.1:9067` (Zebra) | `https://zec.rocks:443` (TLS, webpki roots) |
+| `ZEC_MIN_CONFIRMATIONS` | 1 | 10 |
+| new wallet / UFVK birthday | block 2 | chain tip - 100 (stored in the wallet DB) |
+| ports: mintd, processor gRPC, status, guardians, POS | 8085, 50051, 8095, 7101-3, 8090 | +1000: 9085, 51051, 9095, 8101-3, 9090 |
+| mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` |
+| keys | `scripts/devnet-reset.sh --new-keys` | `scripts/mainnet-dkg.sh` |
+
+- Chain access is only the light-wallet gRPC (GetLatestBlock, GetTransaction, GetBlock,
+  SendTransaction, GetTreeState), so no local node is needed.
+- Labels: on mainnet every log line starts with `MAINNET`, every binary prints a
+  `*** MAINNET (real ZEC) ***` banner, and `devwallet send` / `zec-ecash-cli withdraw` refuse
+  unless given `--confirm-mainnet`.
+- `scripts/mainnet-dkg.sh` runs a fresh 2-of-3 DKG into `mainnet/keys/` (files mode 600) and
+  refuses if any key exists there. It runs all three guardians on one machine: move each
+  `guardian-N.key` to its own machine afterwards; any two shares can spend the reserve.
+- The reserve cap (`ZEC_MAX_RESERVE`, default 1,000,000 zat) refuses deposit quotes that could
+  push the reserve past it, counting open quotes; `GET /deposit-quote?amount=` says why.
+- Devnet scripts pin `ZEC_NETWORK=regtest` and stop processes by their devnet ports, so they
+  never stop a mainnet process; `devnet-reset.sh` never touches `mainnet/`.
+- Seeds and keys are still never generated implicitly; seed files are created mode 600.
+
+Dry check (moves nothing):
+
+    ZEC_NETWORK=mainnet cargo run -p devwallet -- info     # server, tip, branch; Ironwood active?
+    ZEC_NETWORK=mainnet cargo run -p devwallet -- --seed mainnet/keys/dry-check-wallet.seed new
+    ZEC_NETWORK=mainnet cargo run -p devwallet -- --seed mainnet/keys/dry-check-wallet.seed sync
+
+`mainnet/.env` holds `CDK_MINTD_MNEMONIC` (the mainnet mint's own, never the devnet's),
+`ZEC_MINT_URL`, `ZEC_MINT_CA` (if needed), and any `ZEC_*` overrides.
 
 ## Version notes
 - `orchard` is pinned to `=0.15.5`; 0.16 conflicts with `zcash_primitives` 0.30.

@@ -52,7 +52,7 @@ async fn main() -> anyhow::Result<()> {
             .resolve_operator_action(&quote_id)?
             .with_context(|| format!("withdrawal {quote_id} is not flagged (or already resolved)"))?;
         tracing::warn!(%quote_id, %reason, "operator action resolved by hand");
-        println!("cleared {quote_id} ({} zat to {}): {reason}", w.amount_zats, w.address);
+        println!("{}: cleared {quote_id} ({} zat to {}): {reason}", cfg.network.label(), w.amount_zats, w.address);
         println!("It is not watched or retried any more; pay the recipient by other means if needed.");
         return Ok(());
     }

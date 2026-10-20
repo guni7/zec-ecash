@@ -8,6 +8,7 @@
 //!   cargo run -p devwallet -- balance                 # sync, then spendable/pending per pool
 //!   cargo run -p devwallet -- send <address> <zats>   # sync, build, prove, sign, broadcast
 //!   cargo run -p devwallet -- tip                     # the light-wallet server's tip height (no wallet)
+//!   cargo run -p devwallet -- info                    # server, chain, tip, consensus branch (Ironwood?)
 //!
 //! Global flags (before the command):
 //!   --seed <path>          default devnet/keys/user-wallet.seed (keys survive resets)
@@ -28,7 +29,7 @@ use anyhow::{Context, Result, bail};
 use zec_wallet::{PoolBalance, Wallet};
 
 const USAGE: &str = "usage: devwallet [--seed <path> | --ufvk <path>] [--db <path>] [--lightwalletd <url>] \
-                     [--confirm-mainnet] <new|address|sync|balance|send <address> <zats>|tip>   \
+                     [--confirm-mainnet] <new|address|sync|balance|send <address> <zats>|tip|info>   \
                      (run from the zec-ecash folder)";
 
 #[tokio::main]
@@ -92,6 +93,31 @@ async fn main() -> Result<()> {
 
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["tip"] => println!("{}", zec_wallet::chain_tip(&lightwalletd).await?),
+        ["info"] => {
+            use zcash_protocol::consensus::{BlockHeight, BranchId, NetworkUpgrade, Parameters};
+            let i = zec_wallet::server_info(&lightwalletd).await?;
+            let params = network.params();
+            let ironwood = params.activation_height(NetworkUpgrade::Nu6_3);
+            let expected = format!("{:08x}", u32::from(BranchId::for_height(&params, BlockHeight::from(i.block_height))));
+            println!("network         {}", network.label());
+            println!("server          {lightwalletd} ({} {})", i.vendor, i.version);
+            println!("chain           {}", i.chain_name);
+            println!("tip             {}", i.block_height);
+            println!("branch (server) {}", i.consensus_branch_id);
+            println!("branch (ours)   {expected} at the tip, by our consensus parameters");
+            match ironwood {
+                Some(h) => println!(
+                    "Ironwood (NU6.3) activates at {h}: {}",
+                    if BlockHeight::from(i.block_height) >= h { "ACTIVE at the tip" } else { "not active yet" }
+                ),
+                None => println!("Ironwood (NU6.3): not scheduled on this network"),
+            }
+            anyhow::ensure!(
+                i.consensus_branch_id.eq_ignore_ascii_case(&expected),
+                "the server's consensus branch {} differs from ours {expected}: wrong network or outdated parameters",
+                i.consensus_branch_id
+            );
+        }
         ["new"] => {
             zec_wallet::create_seed(&seed_path)?;
             println!("Created {} ({} wallet; keep it out of git)", seed_path.display(), network.label());

@@ -104,6 +104,24 @@ impl Network {
     }
 }
 
+/// Writes a new secret file (a seed): never over an existing file (`create_new`, so not even in a
+/// race), readable by this user only (mode 600 on Unix). Creates the parent directory.
+pub fn write_secret(path: &Path, contents: &str) -> Result<()> {
+    use std::io::Write;
+    if let Some(dir) = path.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    std::os::unix::fs::OpenOptionsExt::mode(&mut options, 0o600);
+    let mut file = options
+        .open(path)
+        .map_err(|e| anyhow::anyhow!("cannot create {} (it must not exist yet): {e}", path.display()))?;
+    file.write_all(contents.as_bytes())?;
+    Ok(())
+}
+
 static CURRENT: OnceLock<Network> = OnceLock::new();
 
 /// Reads `ZEC_NETWORK` (once). Binaries call this first so a bad value fails cleanly.
@@ -164,6 +182,21 @@ mod tests {
         assert_eq!(Network::Mainnet.port(50051), 51051);
         assert_eq!(Network::Regtest.port(50051), 50051);
         assert_eq!(Network::Mainnet.state_dir(), Path::new("mainnet"));
+    }
+
+    #[test]
+    fn secrets_are_private_and_never_overwritten() {
+        let path = std::env::temp_dir().join(format!("zec-network-secret-{}", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        write_secret(&path, "aa").unwrap();
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(std::fs::metadata(&path).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+        assert!(write_secret(&path, "bb").is_err());
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "aa", "unchanged");
+        std::fs::remove_file(&path).unwrap();
     }
 
     #[test]

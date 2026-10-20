@@ -68,11 +68,7 @@ pub fn create_seed(seed_path: &Path) -> Result<()> {
     }
     let mut seed = [0u8; 32];
     OsRng.fill_bytes(&mut seed);
-    if let Some(dir) = seed_path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(seed_path, hex::encode(seed))?;
-    Ok(())
+    network::write_secret(seed_path, &hex::encode(seed))
 }
 
 /// The wallet's address straight from the seed, without a DB or a node.
@@ -663,6 +659,32 @@ pub async fn chain_tip(lightwalletd: &str) -> Result<u32> {
         .await?
         .into_inner();
     u32::try_from(tip.height).context("tip height out of range")
+}
+
+/// What a light-wallet server says about itself and its chain (GetLightdInfo).
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub vendor: String,
+    pub version: String,
+    pub chain_name: String,
+    pub block_height: u32,
+    /// Hex, as the server reports it (e.g. "37a5165b" for Ironwood / NU6.3).
+    pub consensus_branch_id: String,
+}
+
+pub async fn server_info(lightwalletd: &str) -> Result<ServerInfo> {
+    let i = connect(lightwalletd)
+        .await?
+        .get_lightd_info(zcash_client_backend::proto::service::Empty {})
+        .await?
+        .into_inner();
+    Ok(ServerInfo {
+        vendor: i.vendor,
+        version: i.version,
+        chain_name: i.chain_name,
+        block_height: u32::try_from(i.block_height).context("tip height out of range")?,
+        consensus_branch_id: i.consensus_branch_id,
+    })
 }
 
 /// Parses a txid in its usual display form (byte-reversed hex).

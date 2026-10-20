@@ -613,10 +613,7 @@ fn init_seed(seed_path: &Path, network: zec_network::Network) -> Result<()> {
     }
     let mut seed = [0u8; 64];
     rand::rngs::OsRng.fill_bytes(&mut seed);
-    if let Some(dir) = seed_path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(seed_path, hex::encode(seed))?;
+    zec_network::write_secret(seed_path, &hex::encode(seed))?;
     println!("Created {} ({} wallet; keep it out of git)", seed_path.display(), network.label());
     Ok(())
 }

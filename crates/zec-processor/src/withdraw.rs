@@ -5,11 +5,18 @@
 //! transaction is mined, a withdrawal reports Pending. It reports Failed only when nothing was
 //! ever broadcast, or when the chain is past the transaction's expiry height and it isn't mined.
 //! The txid is saved (state BROADCAST) *before* the transaction is sent.
+//!
+//! Reorgs: the watcher records the block a transaction is mined in. If the node later no longer
+//! has it mined (that block was replaced), the record is cleared and the withdrawal keeps
+//! reporting Pending while it is rebroadcast. It settles PAID only once the block it is in now
+//! is `min_confirmations` deep.
+use std::collections::HashMap;
+
 use anyhow::{Result, bail};
 use async_trait::async_trait;
 use cdk_common::nuts::MeltQuoteState;
 
-use crate::store::{QuoteStore, Withdrawal, WithdrawalState};
+use crate::store::{MinedAt, QuoteStore, Withdrawal, WithdrawalState};
 
 use WithdrawalState::*;
 
@@ -146,26 +153,80 @@ pub fn reconcile_unbroadcast(store: &QuoteStore) -> Result<Vec<Withdrawal>> {
     Ok(failed)
 }
 
+/// How far back a block can still be replaced: Zebra never reorgs more than 99 blocks.
+/// Settled (MINED) withdrawals are watched this long.
+pub const REORG_WATCH_DEPTH: u32 = 100;
+
 pub enum Settled {
     Paid(Withdrawal),
     Expired(Withdrawal),
+    /// The block it was mined in was replaced and the node no longer has it mined. Still
+    /// BROADCAST (Pending): rebroadcast it.
+    Reorged { w: Withdrawal, was: MinedAt },
+    /// Already reported PAID, but its block was replaced and it is no longer mined. The mint
+    /// can't take PAID back; rebroadcast it so it is mined again.
+    ReorgedAfterPaid { w: Withdrawal, was: MinedAt },
 }
 
-/// Watcher pass over BROADCAST rows at chain tip `tip`. `mined_height` says where (if) the
-/// wallet has seen a txid mined. Each row settles at most once.
+/// Txids the watcher must look up on the node at `tip`: every BROADCAST row, and MINED rows
+/// whose block could still be reorged away.
+pub fn txids_to_watch(store: &QuoteStore, tip: u32) -> Result<Vec<String>> {
+    Ok(store
+        .withdrawals_in(&[Broadcast, Mined])?
+        .into_iter()
+        .filter(|w| w.state == Broadcast || w.mined_at.as_ref().is_some_and(|m| tip.saturating_sub(m.height) < REORG_WATCH_DEPTH))
+        .filter_map(|w| w.txid)
+        .collect())
+}
+
+/// Watcher pass at node tip `tip`. `on_chain` is the node's current answer for each txid from
+/// [`txids_to_watch`]: the block it is mined in, or `None` (mempool, side chain or unknown).
+/// Rows whose txid is not in `on_chain` are skipped. Paid/Expired happen at most once per row.
 pub fn settle(
     store: &QuoteStore,
     tip: u32,
     min_confirmations: u32,
-    mut mined_height: impl FnMut(&str) -> Result<Option<u32>>,
+    on_chain: &HashMap<String, Option<MinedAt>>,
 ) -> Result<Vec<Settled>> {
     let mut settled = vec![];
-    for w in store.withdrawals_in(&[Broadcast])? {
-        let Some(txid) = w.txid.as_deref() else { continue };
-        match mined_height(txid)? {
-            Some(h) => {
-                let confirmations = tip.saturating_sub(h) + 1;
-                if confirmations >= min_confirmations && store.transition(&w.quote_id, &[Broadcast], Mined)? {
+    for w in store.withdrawals_in(&[Broadcast, Mined])? {
+        let Some(now) = w.txid.as_deref().and_then(|t| on_chain.get(t)) else { continue };
+        if w.state == Mined {
+            match (&w.mined_at, now) {
+                (Some(was), None) => {
+                    let was = was.clone();
+                    settled.push(Settled::ReorgedAfterPaid { w, was });
+                }
+                (was, Some(m)) if was.as_ref() != Some(m) => store.set_mined_at(&w.quote_id, Some(m))?,
+                _ => {}
+            }
+            continue;
+        }
+
+        if now != &w.mined_at {
+            store.set_mined_at(&w.quote_id, now.as_ref())?;
+            match (&w.mined_at, now) {
+                (Some(was), None) => {
+                    settled.push(Settled::Reorged { w: store.withdrawal(&w.quote_id)?.unwrap_or(w.clone()), was: was.clone() })
+                }
+                (Some(was), Some(m)) => tracing::warn!(
+                    quote_id = %w.quote_id, txid = ?w.txid, was_height = was.height, was_block = %was.block_hash,
+                    height = m.height, block = %m.block_hash, "withdrawal now mined in a different block (reorg)"
+                ),
+                (None, Some(m)) => tracing::info!(
+                    quote_id = %w.quote_id, txid = ?w.txid, height = m.height, block = %m.block_hash,
+                    "withdrawal seen mined; settles at {min_confirmations} confirmations"
+                ),
+                (None, None) => {}
+            }
+        }
+        match now {
+            Some(m) => {
+                let confirmations = tip.saturating_sub(m.height) + 1;
+                if m.height <= tip
+                    && confirmations >= min_confirmations
+                    && store.transition(&w.quote_id, &[Broadcast], Mined)?
+                {
                     settled.push(Settled::Paid(store.withdrawal(&w.quote_id)?.unwrap_or(w)));
                 }
             }
@@ -255,6 +316,7 @@ mod tests {
             txid: None,
             expiry_height: None,
             updated_at: 0,
+            mined_at: None,
         };
         for s in [Built, Signing, Broadcast] {
             w.state = s;
@@ -296,13 +358,13 @@ mod tests {
         let mut reserve = FakeReserve { fee: 10_000, expiry: 100, ..Default::default() };
         make_payment(&store, &mut reserve, "q", None).await.unwrap();
 
-        let not_mined = |_: &str| Ok(None);
-        assert!(settle(&store, 100, 1, not_mined).unwrap().is_empty(), "at expiry: still pending");
+        let not_mined = chain(None);
+        assert!(settle(&store, 100, 1, &not_mined).unwrap().is_empty(), "at expiry: still pending");
         assert_eq!(row(&store, "q").state, Broadcast);
-        let s = settle(&store, 101, 1, not_mined).unwrap();
+        let s = settle(&store, 101, 1, &not_mined).unwrap();
         assert!(matches!(s.as_slice(), [Settled::Expired(_)]));
         assert_eq!(row(&store, "q").state, Failed);
-        assert!(settle(&store, 102, 1, not_mined).unwrap().is_empty(), "fails once");
+        assert!(settle(&store, 102, 1, &not_mined).unwrap().is_empty(), "fails once");
     }
 
     #[tokio::test]
@@ -310,11 +372,85 @@ mod tests {
         let store = store_with("q", 10_000);
         let mut reserve = FakeReserve { fee: 10_000, expiry: 100, ..Default::default() };
         make_payment(&store, &mut reserve, "q", None).await.unwrap();
-        let mined = |_: &str| Ok(Some(100));
-        assert!(settle(&store, 100, 2, mined).unwrap().is_empty(), "1 of 2 confirmations");
-        let s = settle(&store, 105, 2, mined).unwrap();
+        let mined = chain(Some(at(100, "aa")));
+        assert!(settle(&store, 100, 2, &mined).unwrap().is_empty(), "1 of 2 confirmations");
+        let s = settle(&store, 105, 2, &mined).unwrap();
         assert!(matches!(s.as_slice(), [Settled::Paid(w)] if w.state == Mined));
-        assert!(settle(&store, 106, 2, mined).unwrap().is_empty(), "settles once");
+        assert!(settle(&store, 106, 2, &mined).unwrap().is_empty(), "settles once");
+    }
+
+    fn at(height: u32, block_hash: &str) -> MinedAt {
+        MinedAt { height, block_hash: block_hash.into() }
+    }
+
+    /// The mocked node: what it says about tx1 (the only txid in these tests).
+    fn chain(tx1: Option<MinedAt>) -> HashMap<String, Option<MinedAt>> {
+        HashMap::from([("tx1".to_string(), tx1)])
+    }
+
+    #[tokio::test]
+    async fn reorg_before_depth_goes_back_to_pending_and_settles_on_new_block() {
+        let store = store_with("q", 10_000);
+        let mut reserve = FakeReserve { fee: 10_000, expiry: 500, ..Default::default() };
+        make_payment(&store, &mut reserve, "q", None).await.unwrap();
+
+        // Mined in block A at 100; depth 3 not reached yet. The block is recorded.
+        assert!(settle(&store, 101, 3, &chain(Some(at(100, "aa")))).unwrap().is_empty());
+        assert_eq!(row(&store, "q").mined_at, Some(at(100, "aa")));
+        assert_eq!(status_of(&row(&store, "q")), MeltQuoteState::Pending);
+
+        // invalidateblock A: the tip drops to 99 and the node no longer has the tx mined.
+        let s = settle(&store, 99, 3, &chain(None)).unwrap();
+        assert!(matches!(s.as_slice(), [Settled::Reorged { w, was }] if w.state == Broadcast && *was == at(100, "aa")));
+        let w = row(&store, "q");
+        assert_eq!((w.state, w.mined_at.clone()), (Broadcast, None));
+        assert_eq!(status_of(&w), MeltQuoteState::Pending, "not Failed: it can still be mined");
+        assert!(settle(&store, 99, 3, &chain(None)).unwrap().is_empty(), "reported once");
+
+        // Re-mined in a replacement block B at 101. Depth counts from B, not A.
+        assert!(settle(&store, 102, 3, &chain(Some(at(101, "bb")))).unwrap().is_empty(), "2 of 3");
+        assert_eq!(row(&store, "q").mined_at, Some(at(101, "bb")));
+        let s = settle(&store, 103, 3, &chain(Some(at(101, "bb")))).unwrap();
+        assert!(matches!(s.as_slice(), [Settled::Paid(w)] if w.mined_at == Some(at(101, "bb"))));
+    }
+
+    #[tokio::test]
+    async fn moved_to_a_replacement_block_at_once_keeps_counting_from_the_new_block() {
+        let store = store_with("q", 10_000);
+        let mut reserve = FakeReserve { fee: 10_000, expiry: 500, ..Default::default() };
+        make_payment(&store, &mut reserve, "q", None).await.unwrap();
+        assert!(settle(&store, 101, 3, &chain(Some(at(100, "aa")))).unwrap().is_empty());
+        // Replaced by a longer chain where it sits at 102: 101..102 is only 1 confirmation.
+        assert!(settle(&store, 102, 3, &chain(Some(at(102, "cc")))).unwrap().is_empty());
+        assert_eq!(row(&store, "q").mined_at, Some(at(102, "cc")));
+        assert!(matches!(settle(&store, 104, 3, &chain(Some(at(102, "cc")))).unwrap().as_slice(), [Settled::Paid(_)]));
+    }
+
+    #[tokio::test]
+    async fn reorg_after_paid_is_reported_until_mined_again() {
+        let store = store_with("q", 10_000);
+        let mut reserve = FakeReserve { fee: 10_000, expiry: 500, ..Default::default() };
+        make_payment(&store, &mut reserve, "q", None).await.unwrap();
+        assert!(matches!(settle(&store, 100, 1, &chain(Some(at(100, "aa")))).unwrap().as_slice(), [Settled::Paid(_)]));
+        assert_eq!(txids_to_watch(&store, 150).unwrap(), ["tx1"], "watched while reorgable");
+
+        for _ in 0..2 {
+            let s = settle(&store, 99, 1, &chain(None)).unwrap();
+            assert!(matches!(s.as_slice(), [Settled::ReorgedAfterPaid { was, .. }] if *was == at(100, "aa")));
+        }
+        assert_eq!(row(&store, "q").state, Mined, "PAID is final for the mint");
+        assert!(settle(&store, 101, 1, &chain(Some(at(101, "bb")))).unwrap().is_empty());
+        assert_eq!(row(&store, "q").mined_at, Some(at(101, "bb")));
+        assert!(txids_to_watch(&store, 101 + REORG_WATCH_DEPTH).unwrap().is_empty(), "deep enough: no longer watched");
+    }
+
+    #[tokio::test]
+    async fn txid_missing_from_the_snapshot_is_left_alone() {
+        let store = store_with("q", 10_000);
+        let mut reserve = FakeReserve { fee: 10_000, expiry: 100, ..Default::default() };
+        make_payment(&store, &mut reserve, "q", None).await.unwrap();
+        assert!(settle(&store, 200, 1, &HashMap::new()).unwrap().is_empty(), "no answer: not expired");
+        assert_eq!(row(&store, "q").state, Broadcast);
     }
 
     #[tokio::test]

@@ -54,6 +54,14 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
   Failed only if it was never broadcast or expired unmined, because the mint refunds the ecash
   on Failed. State lives in `zec_withdrawal` in `devnet/processor.sqlite`; after a crash the
   processor fails unbroadcast withdrawals and rebroadcasts broadcast ones.
+- Reorgs: each pass asks the node (not the wallet, which notices a reorg only once the new chain
+  is longer) which block each withdrawal's tx is in, and records its height and hash. If that
+  block is replaced and the tx is no longer mined, the record is cleared, a `REORG` warning is
+  logged, and the withdrawal stays Pending and is rebroadcast (zebrad does not put transactions
+  from a dropped block back in its mempool). It settles PAID only once the block it is in now is
+  `ZEC_MIN_CONFIRMATIONS` deep. A withdrawal already PAID stays watched for 100 blocks; if its
+  block disappears it is logged as `REORG AFTER PAID` and rebroadcast (the mint can't undo PAID,
+  so raise the depth). Try it: `curl -s 127.0.0.1:18232 -d '{"method":"invalidateblock","params":["<hash>"]}'`.
 - zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
 - Signing: `make_payment` builds the PCZT and returns Pending; FROST signing runs in the
   background (the mint locks the quote during `make_payment`, and guardians read the quote

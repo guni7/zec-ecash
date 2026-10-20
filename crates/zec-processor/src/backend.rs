@@ -38,7 +38,7 @@ use zec_wallet::{Pczt, Signer, Wallet};
 
 use crate::{
     config::Config,
-    store::{Quote, QuoteStore, Withdrawal, WithdrawalState},
+    store::{MinedAt, Quote, QuoteStore, Withdrawal, WithdrawalState},
     withdraw::{self, BuiltTx, Reserve, Settled},
 };
 
@@ -407,7 +407,9 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
-/// One pass: sync the reserve wallet, credit new notes, emit events for newly paid quotes.
+/// One pass: sync the reserve wallet, credit new notes, emit events for newly paid quotes;
+/// then watch withdrawals against the node (even if the wallet sync failed: right after a
+/// reorg the wallet may be the one that is behind).
 async fn sync_once(
     wallet: &Mutex<Wallet>,
     store: &QuoteStore,
@@ -415,27 +417,44 @@ async fn sync_once(
     min_confirmations: u32,
 ) -> anyhow::Result<()> {
     let mut wallet = wallet.lock().await;
-    let tip = wallet.sync().await?;
-    let notes = wallet.received_notes()?;
-    for quote in store.apply_notes(&notes, tip, min_confirmations)? {
-        tracing::info!(
-            quote_id = %quote.quote_id,
-            received_zats = quote.received_zats,
-            confirmations = quote.confirmations,
-            "deposit paid"
-        );
-        // No subscriber right now is fine: the mint also polls check_incoming_payment_status.
-        let _ = events.send(Event::PaymentReceived(paid_response(&quote)?));
+    let synced = wallet.sync().await;
+    if let Ok(tip) = synced {
+        let notes = wallet.received_notes()?;
+        for quote in store.apply_notes(&notes, tip, min_confirmations)? {
+            tracing::info!(
+                quote_id = %quote.quote_id,
+                received_zats = quote.received_zats,
+                confirmations = quote.confirmations,
+                "deposit paid"
+            );
+            // No subscriber right now is fine: the mint also polls check_incoming_payment_status.
+            let _ = events.send(Event::PaymentReceived(paid_response(&quote)?));
+        }
+    }
+    watch_withdrawals(&mut wallet, store, events, min_confirmations).await?;
+    synced.map(|_| ())
+}
+
+/// Settles BROADCAST withdrawals from the node's current view (tip, and the block each tx is
+/// in), handles reorgs, then resends every withdrawal that still needs to be mined.
+async fn watch_withdrawals(
+    wallet: &mut Wallet,
+    store: &QuoteStore,
+    events: &broadcast::Sender<Event>,
+    min_confirmations: u32,
+) -> anyhow::Result<()> {
+    let tip = wallet.node_tip().await?;
+    let mut on_chain = HashMap::new();
+    for txid in withdraw::txids_to_watch(store, tip)? {
+        let inclusion = wallet.tx_inclusion(zec_wallet::parse_txid(&txid)?).await?;
+        on_chain.insert(txid, inclusion.map(|i| MinedAt { height: i.height, block_hash: i.block_hash }));
     }
 
-    // Withdrawals: settle BROADCAST rows, then resend the ones still waiting to be mined.
-    let settled = withdraw::settle(store, tip, min_confirmations, |txid| {
-        wallet.tx_mined_height(zec_wallet::parse_txid(txid)?)
-    })?;
-    for s in settled {
+    let mut resend = vec![];
+    for s in withdraw::settle(store, tip, min_confirmations, &on_chain)? {
         match s {
             Settled::Paid(w) => {
-                tracing::info!(quote_id = %w.quote_id, txid = ?w.txid, "withdrawal mined");
+                tracing::info!(quote_id = %w.quote_id, txid = ?w.txid, block = ?w.mined_at, "withdrawal mined");
                 let _ = events.send(Event::PaymentSuccessful {
                     quote_id: parse_quote_id(&w.quote_id)?,
                     details: outgoing_response(&w)?,
@@ -450,12 +469,25 @@ async fn sync_once(
                 );
                 emit_failed(events, &w, &reason);
             }
+            Settled::Reorged { w, was } => {
+                tracing::warn!(
+                    quote_id = %w.quote_id, txid = ?w.txid, was_height = was.height, was_block = %was.block_hash, tip,
+                    "REORG: block holding withdrawal was replaced and the tx is no longer mined; back to pending, rebroadcasting"
+                );
+            }
+            Settled::ReorgedAfterPaid { w, was } => {
+                tracing::error!(
+                    quote_id = %w.quote_id, txid = ?w.txid, was_height = was.height, was_block = %was.block_hash, tip,
+                    "REORG AFTER PAID: withdrawal already reported paid is no longer mined; rebroadcasting \
+                     (raise ZEC_MIN_CONFIRMATIONS if this happens)"
+                );
+                resend.extend(w.txid);
+            }
         }
     }
-    for w in store.withdrawals_in(&[WithdrawalState::Broadcast])? {
-        if let Some(txid) = &w.txid
-            && let Err(e) = rebroadcast(&mut wallet, txid).await
-        {
+    resend.extend(store.withdrawals_in(&[WithdrawalState::Broadcast])?.into_iter().filter_map(|w| w.txid));
+    for txid in resend {
+        if let Err(e) = rebroadcast(wallet, &txid).await {
             tracing::debug!(%txid, "rebroadcast: {e:#}");
         }
     }

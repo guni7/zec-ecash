@@ -26,7 +26,7 @@ use zcash_client_backend::{
         },
     },
     fees::StandardFeeRule,
-    proto::service::{BlockId, RawTransaction, compact_tx_streamer_client::CompactTxStreamerClient},
+    proto::service::{BlockId, RawTransaction, TxFilter, compact_tx_streamer_client::CompactTxStreamerClient},
     wallet::OvkPolicy,
 };
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
@@ -466,6 +466,51 @@ impl Wallet {
     pub fn tx_mined_height(&self, txid: TxId) -> Result<Option<u32>> {
         Ok(self.db.get_tx_height(txid)?.map(u32::from))
     }
+
+    /// The node's current chain tip height (which drops after a reorg to a shorter chain, while
+    /// the wallet's own scanned height does not).
+    pub async fn node_tip(&mut self) -> Result<u32> {
+        let tip = connect(&self.lightwalletd)
+            .await?
+            .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
+            .await?
+            .into_inner();
+        u32::try_from(tip.height).context("tip height out of range")
+    }
+
+    /// Where the node has `txid` in its current main chain, asked now (not as of the last
+    /// sync: the wallet only notices a reorg once the new chain is longer than what it
+    /// scanned). `None` when the transaction is in the mempool, only on a side chain, or
+    /// unknown to the node.
+    pub async fn tx_inclusion(&mut self, txid: TxId) -> Result<Option<TxInclusion>> {
+        let mut client = connect(&self.lightwalletd).await?;
+        let raw = match client.get_transaction(TxFilter { block: None, index: 0, hash: txid.as_ref().to_vec() }).await {
+            Ok(r) => r.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(None),
+            Err(status) => bail!("node lookup of {txid} failed: {status}"),
+        };
+        // 0 = mempool, u64::MAX = mined only on a side chain (see RawTransaction::height).
+        let height = match raw.height {
+            0 | u64::MAX => return Ok(None),
+            h => u32::try_from(h).context("transaction height out of range")?,
+        };
+        let block = client
+            .get_block(BlockId { height: height.into(), hash: vec![] })
+            .await
+            .with_context(|| format!("cannot fetch block {height}"))?
+            .into_inner();
+        // Display order, as zebrad's getblockhash prints it.
+        let block_hash = hex::encode(block.hash.iter().rev().copied().collect::<Vec<u8>>());
+        Ok(Some(TxInclusion { height, block_hash }))
+    }
+}
+
+/// A transaction's place in the node's current main chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxInclusion {
+    pub height: u32,
+    /// Hex, in display (byte-reversed) order.
+    pub block_hash: String,
 }
 
 /// Parses a txid in its usual display form (byte-reversed hex).

@@ -40,7 +40,7 @@ pasta_curves = "0.5"
 serde = { version = "1", features = ["derive"] }
 # HTTP for the guardian protocol; versions already locked via tonic.
 axum = "0.8"
-hyper = "1"
+hyper = { version = "1", features = ["client", "http1"] }
 # Guardian transport: HMAC-SHA256 request auth and TLS (rustls with ring, as tonic uses).
 sha2 = "0.10"
 hmac = "0.12"

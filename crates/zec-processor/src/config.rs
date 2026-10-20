@@ -18,8 +18,14 @@ pub struct Config {
     pub mint_db: PathBuf,
     /// The guardians' FROST public key package (from the DKG).
     pub frost_pubkeys: PathBuf,
-    /// Guardian base URLs.
+    /// Guardian base URLs; the N-th is guardian N.
     pub guardians: Vec<String>,
+    /// CA that issued the guardians' TLS certificates (ZEC_GUARDIAN_CA; default
+    /// <state>/keys/guardian-ca.crt if present). Web roots are trusted too.
+    pub guardian_ca: Option<PathBuf>,
+    /// Where guardian-N.auth (each guardian's request-auth secret) live (ZEC_GUARDIAN_AUTH_DIR;
+    /// default <state>/keys).
+    pub guardian_auth_dir: PathBuf,
     /// Per-round timeout for guardian requests.
     pub guardian_timeout: Duration,
     /// Quote table (`zec_deposit_address`).
@@ -73,13 +79,19 @@ impl Config {
             frost_pubkeys: path("ZEC_FROST_PUBKEYS", "keys/frost-pubkeys.json"),
             guardians: get(
                 "ZEC_GUARDIANS",
-                &(1..=3).map(|i| format!("http://127.0.0.1:{}", port(7100 + i))).collect::<Vec<_>>().join(","),
+                // MAINNET guardians serve TLS (and normally run on their own machines).
+                &(1..=3)
+                    .map(|i| format!("{}://127.0.0.1:{}", if network.is_mainnet() { "https" } else { "http" }, port(7100 + i)))
+                    .collect::<Vec<_>>()
+                    .join(","),
             )
             .split(',')
             .map(|u| u.trim().trim_end_matches('/').to_owned())
             .filter(|u| !u.is_empty())
             .collect(),
             guardian_timeout: Duration::from_secs(num("ZEC_GUARDIAN_TIMEOUT_SECS", "30")?),
+            guardian_ca: Some(path("ZEC_GUARDIAN_CA", "keys/guardian-ca.crt")).filter(|p| p.exists()),
+            guardian_auth_dir: path("ZEC_GUARDIAN_AUTH_DIR", "keys"),
             processor_db: path("ZEC_PROCESSOR_DB", "processor.sqlite"),
             grpc_addr: get("ZEC_GRPC_ADDR", &format!("127.0.0.1:{}", port(50051)))
                 .parse()
@@ -98,6 +110,32 @@ impl Config {
                 .parse()
                 .context("ZEC_STATUS_ADDR must be host:port")?,
         })
+    }
+}
+
+impl Config {
+    /// One endpoint per guardian. On MAINNET every guardian must be https:// and have its
+    /// guardian-N.auth secret here; on regtest both are used when configured.
+    pub fn guardian_endpoints(&self) -> Result<Vec<crate::frost_signer::Endpoint>> {
+        let mut out = vec![];
+        for (i, url) in self.guardians.iter().enumerate() {
+            let id = i + 1;
+            let auth = self.guardian_auth_dir.join(format!("guardian-{id}.auth"));
+            if self.network.is_mainnet() {
+                anyhow::ensure!(url.starts_with("https://"), "MAINNET guardian {id} must be reached over https://, not {url}");
+                anyhow::ensure!(
+                    auth.exists(),
+                    "MAINNET: {} is missing (guardian {id}'s request-auth secret, from `guardian make-auth-key`)",
+                    auth.display()
+                );
+            }
+            let mut client = zec_frost::wire::Client::with_ca(self.guardian_ca.as_deref())?;
+            if auth.exists() {
+                client = client.signing(zec_frost::wire::auth::Key::read(&auth)?);
+            }
+            out.push(crate::frost_signer::Endpoint { url: url.clone(), client });
+        }
+        Ok(out)
     }
 }
 

@@ -6,10 +6,15 @@
 //!   guardian verify --id N                    # key share + pubkeys + UFVK agree, here and with
 //!                                             # the other guardians (see dkg.rs)
 //!   guardian check-ufvk --id N                # UFVK's ak == my group key; print first address
-//!   guardian serve --id N                     # HTTP on 127.0.0.1:710N (MAINNET: 810N)
+//!   guardian make-auth-key --id N             # keys/guardian-N.auth: the secret shared with the
+//!                                             # processor that authenticates round requests
+//!   guardian serve --id N [--listen ADDR]     # 127.0.0.1:710N (MAINNET: 810N); TLS and request
+//!                                             # authentication when configured (see transport.rs;
+//!                                             # required on MAINNET)
 //!
-//! ZEC_NETWORK=mainnet: addresses and the UFVK are mainnet, the default --dir is mainnet, the
-//! default --mint is http://127.0.0.1:9085, and every log line starts with MAINNET.
+//! ZEC_NETWORK=mainnet: addresses and the UFVK are mainnet, the default --dir is mainnet, --mint
+//! defaults to ZEC_MINT_URL in mainnet/.env and must be the mint's public https:// URL, TLS and
+//! request authentication are required, and every log line starts with MAINNET.
 //!
 //! Files (under --dir, default devnet or mainnet):
 //!   keys/guardian-N.key      this guardian's KeyPackage (secret; survives resets)
@@ -21,6 +26,7 @@
 mod dkg;
 mod nonces;
 mod policy;
+mod transport;
 
 use std::{
     collections::HashMap,
@@ -75,6 +81,7 @@ fn parse_args() -> Result<Args> {
         mint: format!("http://127.0.0.1:{}", network.port(8085)),
         listen: None,
     };
+    let mut mint_given = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -84,13 +91,27 @@ fn parse_args() -> Result<Args> {
             "--participants" => {
                 args.participants = Some(it.next().context("--participants N")?.parse().context("--participants")?)
             }
-            "--mint" => args.mint = it.next().context("--mint URL")?,
+            "--mint" => {
+                args.mint = it.next().context("--mint URL")?;
+                mint_given = true;
+            }
             "--listen" => args.listen = Some(it.next().context("--listen HOST:PORT")?),
             _ => args.cmd.push(a),
         }
     }
     ensure!((1..=MAX_SIGNERS).contains(&args.id), "--id must be 1..={MAX_SIGNERS}");
+    if network.is_mainnet() && !mint_given {
+        // The mint's public URL, from this machine's mainnet/.env (never the devnet's .env).
+        args.mint = dotenv_value(&network.state_dir().join(".env"), "ZEC_MINT_URL").unwrap_or_default();
+    }
     Ok(args)
+}
+
+/// `KEY=value` from an env file (MAINNET guardians read mainnet/.env, never the devnet's .env).
+fn dotenv_value(path: &Path, key: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()?.lines().find_map(|l| {
+        l.trim().strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').to_owned())
+    })
 }
 
 fn ident(id: u16) -> Result<Identifier> {
@@ -128,9 +149,10 @@ async fn main() -> Result<()> {
     match args.cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["dkg"] => dkg::dkg(&args),
         ["verify"] => dkg::verify(&args),
+        ["make-auth-key"] => transport::make_auth_key(&args),
         ["check-ufvk"] => check_ufvk(&args).map(|_| ()),
         ["serve"] => serve(args).await,
-        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg --threshold 2 --participants 3|verify|check-ufvk|serve>"),
+        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg --threshold 2 --participants 3|verify|make-auth-key|check-ufvk|serve>"),
     }
 }
 
@@ -196,6 +218,9 @@ struct Guardian {
     id: u16,
     keys: Keys,
     mint: String,
+    /// Fetches quotes from the mint: web roots, plus ZEC_MINT_CA if set (a private CA in front of
+    /// the mint, e.g. staging).
+    mint_client: zec_frost::wire::Client,
     nonces: Mutex<Nonces>,
     signed_path: PathBuf,
     /// quote id -> hex sighash this guardian signed for it.
@@ -205,6 +230,9 @@ struct Guardian {
 type Shared = Arc<Guardian>;
 
 async fn serve(args: Args) -> Result<()> {
+    // Transport requirements first: on MAINNET a guardian without TLS or request auth never starts.
+    let mint = args.mint.trim_end_matches('/').to_owned();
+    let security = transport::load(&args, &mint)?;
     let keys = check_ufvk(&args)?;
     let signed_path = args.dir.join(format!("guardian-{}.signed.json", args.id));
     let signed = if signed_path.exists() { read_json(&signed_path)? } else { HashMap::new() };
@@ -212,10 +240,16 @@ async fn serve(args: Args) -> Result<()> {
         .listen
         .clone()
         .unwrap_or_else(|| format!("127.0.0.1:{}", zec_wallet::network::current().port(7100 + args.id)));
+    let network = zec_wallet::network::current();
+    let mint_ca = std::env::var("ZEC_MINT_CA").ok().filter(|v| !v.is_empty()).or_else(|| {
+        network.is_mainnet().then(|| dotenv_value(&network.state_dir().join(".env"), "ZEC_MINT_CA")).flatten()
+    });
+    let mint_client = zec_frost::wire::Client::with_ca(mint_ca.as_deref().map(Path::new))?;
     let g = Arc::new(Guardian {
         id: args.id,
         keys,
-        mint: args.mint.trim_end_matches('/').to_owned(),
+        mint,
+        mint_client,
         nonces: Mutex::new(Nonces::default()),
         signed_path,
         signed: Mutex::new(signed),
@@ -229,14 +263,29 @@ async fn serve(args: Args) -> Result<()> {
         }
     });
 
+    let auth = Arc::new(transport::AuthState {
+        key: security.auth,
+        verifier: Mutex::new(zec_frost::wire::auth::Verifier::default()),
+        guardian: g.id,
+    });
+    let authenticated = auth.key.is_some();
+    // Round requests pass the authentication layer first: an unauthenticated request is refused
+    // before round1 can generate a nonce. /status (public information) stays open.
     let app = Router::new()
         .route("/round1", post(round1))
         .route("/round2", post(round2))
+        .route_layer(axum::middleware::from_fn_with_state(auth, transport::authenticate))
         .route("/status", get(status))
         .with_state(g.clone());
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("cannot bind {addr}"))?;
-    tracing::info!(guardian = g.id, %addr, mint = %g.mint, address = %g.keys.first_address, "guardian serving");
-    axum::serve(listener, app).await?;
+    tracing::info!(
+        guardian = g.id, %addr, tls = security.tls.is_some(), authenticated, mint = %g.mint,
+        address = %g.keys.first_address, "guardian serving"
+    );
+    match security.tls {
+        Some(tls) => axum::serve(transport::TlsListener::new(listener, tls), app).await?,
+        None => axum::serve(listener, app).await?,
+    }
     Ok(())
 }
 
@@ -294,7 +343,7 @@ async fn sign_round2(g: &Guardian, req: &Round2Request, nonces: Vec<frost::round
 
     // a. Ask the mint, not the coordinator, what this quote is.
     let url = format!("{}/v1/melt/quote/zec/{}", g.mint, req.quote_id);
-    let quote: MintQuote = zec_frost::wire::get_json(&url, Duration::from_secs(20)).await.context("(a) mint quote")?;
+    let quote: MintQuote = g.mint_client.get_json(&url, Duration::from_secs(20)).await.context("(a) mint quote")?;
     let receiver = zec_wallet::frost::orchard_receiver(&quote.request).context("(b) quote address")?;
 
     let packages: Vec<SigningPackage> = req

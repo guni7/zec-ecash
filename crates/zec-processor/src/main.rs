@@ -27,10 +27,11 @@ use zec_wallet::Wallet;
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let network = zec_wallet::network::init()?;
-    // Size-capped: <devnet|mainnet>/logs/processor.log (+ .1 .. .5), see the devlog crate.
-    // On mainnet every line starts with "MAINNET".
+    // Size-capped: <devnet|mainnet>/logs/processor.log (+ .1 .. .5; ZEC_LOG_DIR overrides the
+    // directory), see the devlog crate. On mainnet every line starts with "MAINNET".
+    let log_dir = std::env::var_os("ZEC_LOG_DIR").map(std::path::PathBuf::from).unwrap_or_else(|| network.state_dir().join("logs"));
     let log = devlog::init_labeled(
-        &network.state_dir().join("logs"),
+        &log_dir,
         "processor",
         "info,zcash_client_backend=warn,zcash_client_sqlite=warn",
         network.is_mainnet().then_some("MAINNET "),
@@ -69,7 +70,7 @@ async fn main() -> anyhow::Result<()> {
         );
     }
 
-    let signer = frost_signer::FrostSigner::new(cfg.guardians.clone(), &cfg.frost_pubkeys, cfg.guardian_timeout)?;
+    let signer = frost_signer::FrostSigner::new(cfg.guardian_endpoints()?, &cfg.frost_pubkeys, cfg.guardian_timeout)?;
     let ufvk = zec_wallet::frost::read_ufvk(&cfg.mint_ufvk)?;
     anyhow::ensure!(
         zec_wallet::frost::ufvk_ak(&ufvk)? == signer.group_key()?,

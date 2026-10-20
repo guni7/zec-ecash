@@ -37,9 +37,10 @@ use tokio::{
 use zec_wallet::{Pczt, Signer, Wallet};
 
 use crate::{
+    reserves::{self, ReserveMonitor, ReserveStatus},
     config::Config,
     store::{MinedAt, Quote, QuoteStore, Withdrawal, WithdrawalState},
-    withdraw::{self, BuiltTx, Reserve, Settled},
+    withdraw::{self, BuiltTx, QuoteRefusal, Reserve, Settled},
 };
 
 pub const METHOD: &str = "zec";
@@ -56,6 +57,7 @@ pub struct ZecBackend {
     streams: Arc<std::sync::Mutex<StreamHealth>>,
     cancel_stream: Arc<Notify>,
     sync_task: std::sync::Mutex<Option<JoinHandle<()>>>,
+    reserves: ReserveMonitor,
 }
 
 impl ZecBackend {
@@ -70,7 +72,13 @@ impl ZecBackend {
             streams: Arc::new(std::sync::Mutex::new(StreamHealth::default())),
             cancel_stream: Arc::new(Notify::new()),
             sync_task: std::sync::Mutex::new(None),
+            reserves: ReserveMonitor::default(),
         }
+    }
+
+    /// The reserve check's latest result (served at `/reserves`).
+    pub fn reserve_monitor(&self) -> ReserveMonitor {
+        self.reserves.clone()
     }
 
     fn unit() -> CurrencyUnit {
@@ -143,15 +151,8 @@ impl ZecBackend {
             .amount
             .ok_or_else(|| Error::Custom("a zec withdrawal quote needs an amount".to_owned()))?
             .value();
-        if zats < self.cfg.min_zats || zats > self.cfg.max_zats {
-            return Err(Error::Custom(format!(
-                "amount {zats} zat outside {}..={} zat",
-                self.cfg.min_zats, self.cfg.max_zats
-            )));
-        }
         let address = opts.request.trim().to_owned();
-        zec_wallet::validate_withdrawal_address(&address).map_err(backend_err)?;
-        let fee = self.wallet.lock().await.quote_fee(&address, zats).map_err(backend_err)?;
+        let fee = self.check_withdrawal(zats, &address).await.map_err(|r| Error::Custom(r.to_string()))?;
         let quote_id = opts.quote_id.to_string();
         self.store.insert_withdrawal(&quote_id, &address, zats, fee).map_err(backend_err)?;
 
@@ -165,6 +166,21 @@ impl ZecBackend {
             estimated_blocks: Some(self.cfg.min_confirmations),
             fee_options: None,
         })
+    }
+
+    /// Validates a withdrawal and estimates its fee, without recording anything. Shared by the
+    /// mint's quote request and `GET /withdrawal-quote`.
+    pub async fn check_withdrawal(&self, zats: u64, address: &str) -> Result<u64, QuoteRefusal> {
+        let (min, max) = (self.cfg.min_zats, self.cfg.max_zats);
+        if zats < min || zats > max {
+            return Err(QuoteRefusal::AmountOutOfRange { amount: zats, min, max });
+        }
+        zec_wallet::validate_withdrawal_address(address).map_err(|e| QuoteRefusal::InvalidAddress(format!("{e:#}")))?;
+        self.wallet
+            .lock()
+            .await
+            .quote_fee(address, zats)
+            .map_err(|e| QuoteRefusal::from_fee_error(&e, self.cfg.min_confirmations))
     }
 
     async fn run_withdrawal(
@@ -407,6 +423,19 @@ fn now() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0)
 }
 
+/// One reserve check: confirmed reserve (wallet) vs. outstanding ecash (mint DB) + in flight.
+async fn check_reserves(
+    wallet: &Mutex<Wallet>,
+    store: &QuoteStore,
+    cdk_mint_db: &std::path::Path,
+    min_confirmations: u32,
+) -> anyhow::Result<ReserveStatus> {
+    let reserve = wallet.lock().await.confirmed_reserve(min_confirmations)?;
+    let ledger = reserves::read_mint_ledger(cdk_mint_db, UNIT)?;
+    let in_flight = reserves::in_flight(store)?;
+    Ok(reserves::evaluate(reserve.zats, ledger, in_flight, reserve.tip, min_confirmations, now()))
+}
+
 /// One pass: sync the reserve wallet, credit new notes, emit events for newly paid quotes;
 /// then watch withdrawals against the node (even if the wallet sync failed: right after a
 /// reorg the wallet may be the one that is behind).
@@ -506,6 +535,7 @@ impl MintPayment for ZecBackend {
         }
         let (wallet, store, events) = (self.wallet.clone(), self.store.clone(), self.events.clone());
         let (interval, confirmations) = (self.cfg.sync_interval, self.cfg.min_confirmations);
+        let (monitor, cdk_mint_db) = (self.reserves.clone(), self.cfg.cdk_mint_db.clone());
         *task = Some(tokio::spawn(async move {
             let mut ticker = tokio::time::interval(interval);
             ticker.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
@@ -513,6 +543,11 @@ impl MintPayment for ZecBackend {
                 ticker.tick().await;
                 if let Err(e) = sync_once(&wallet, &store, &events, confirmations).await {
                     tracing::warn!("sync pass failed (will retry): {e:#}");
+                }
+                // As of the wallet's last successful sync, even if this one failed.
+                match check_reserves(&wallet, &store, &cdk_mint_db, confirmations).await {
+                    Ok(status) => monitor.record(status).await,
+                    Err(e) => monitor.record_error(format!("{e:#}")).await,
                 }
             }
         }));
@@ -548,6 +583,15 @@ impl MintPayment for ZecBackend {
         &self,
         options: IncomingPaymentOptions,
     ) -> Result<CreateIncomingPaymentResponse, Self::Err> {
+        if let Some(v) = self.reserves.violation().await {
+            let e = Error::Custom(format!(
+                "mint quotes are paused: the confirmed reserve ({} zat) is below outstanding ecash plus \
+                 withdrawals in flight ({} zat); see /reserves",
+                v.reserve_zats, v.required_zats
+            ));
+            tracing::warn!("refused a deposit quote: {e}");
+            return Err(e);
+        }
         // The gRPC server replaces our error with "Could not create invoice", so log it here.
         self.create_deposit(options)
             .await

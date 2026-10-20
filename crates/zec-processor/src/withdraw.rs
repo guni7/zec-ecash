@@ -34,6 +34,57 @@ pub trait Reserve: Send {
     async fn broadcast(&mut self, txid: &str) -> Result<()>;
 }
 
+/// Why a withdrawal can't be quoted. cdk-mintd 0.18.2 turns *any* quote error into "Unit
+/// unsupported" for the wallet, so this is also served at `/withdrawal-quote` for wallets to ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum QuoteRefusal {
+    AmountOutOfRange { amount: u64, min: u64, max: u64 },
+    InvalidAddress(String),
+    /// The reserve's spendable notes (at the confirmation depth) can't cover amount + fee now.
+    InsufficientReserve { spendable: u64, required: u64, min_confirmations: u32 },
+    /// The fee could not be estimated (no transaction could be proposed) for another reason.
+    FeeEstimateFailed(String),
+}
+
+impl QuoteRefusal {
+    /// Stable machine-readable name.
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AmountOutOfRange { .. } => "amount_out_of_range",
+            Self::InvalidAddress(_) => "invalid_address",
+            Self::InsufficientReserve { .. } => "insufficient_reserve",
+            Self::FeeEstimateFailed(_) => "fee_estimate_failed",
+        }
+    }
+
+    /// Classifies an error from the reserve wallet's fee estimate.
+    pub fn from_fee_error(e: &anyhow::Error, min_confirmations: u32) -> Self {
+        match e.downcast_ref::<zec_wallet::InsufficientFunds>() {
+            Some(f) => Self::InsufficientReserve { spendable: f.available, required: f.required, min_confirmations },
+            None => Self::FeeEstimateFailed(format!("{e:#}")),
+        }
+    }
+}
+
+impl std::fmt::Display for QuoteRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AmountOutOfRange { amount, min, max } => {
+                write!(f, "amount {amount} zat is outside the mint's withdrawal limits ({min}..={max} zat)")
+            }
+            Self::InvalidAddress(e) => write!(f, "invalid withdrawal address: {e}"),
+            Self::InsufficientReserve { spendable, required, min_confirmations } => write!(
+                f,
+                "insufficient reserve: the mint can spend {spendable} zat right now (notes with at least \
+                 {min_confirmations} confirmation(s)), and this withdrawal needs {required} zat including the fee"
+            ),
+            Self::FeeEstimateFailed(e) => write!(f, "fee estimate failed: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for QuoteRefusal {}
+
 pub struct BuiltTx {
     pub pczt: Vec<u8>,
     pub fee: u64,
@@ -302,6 +353,17 @@ mod tests {
         assert_eq!(second, first);
         assert_eq!((reserve.builds, reserve.finalized, reserve.broadcasts), (1, 1, 1));
         assert_eq!(status_of(&second), MeltQuoteState::Pending);
+    }
+
+    #[test]
+    fn fee_errors_are_classified_by_type_not_text() {
+        let e = anyhow::Error::new(zec_wallet::InsufficientFunds { available: 275_000, required: 5_020_000 });
+        assert_eq!(
+            QuoteRefusal::from_fee_error(&e.context("quoting"), 3),
+            QuoteRefusal::InsufficientReserve { spendable: 275_000, required: 5_020_000, min_confirmations: 3 }
+        );
+        let e = anyhow::anyhow!("cannot build proposal: Insufficient balance (have 1, need 2)");
+        assert!(matches!(QuoteRefusal::from_fee_error(&e, 1), QuoteRefusal::FeeEstimateFailed(_)), "text alone is not trusted");
     }
 
     #[test]

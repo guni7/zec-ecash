@@ -1,6 +1,6 @@
 // Offline shell for the demo wallet: keeps the page's own files on the device so it opens with
 // no network (Step 4, safe offline receive). Network first, so a reload online always gets the
-// current code; the cache is only the fallback. Mint (/mint) and point-of-sale (/pos) calls are
+// current code; the cache is only the fallback. Mint (/mint), point-of-sale (/pos) and processor status calls are
 // live data and are never cached.
 const CACHE = 'zec-ecash-shell-v1';
 
@@ -10,7 +10,7 @@ self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (url.pathname.startsWith('/mint') || url.pathname.startsWith('/pos')) return;
+  if (['/mint', '/pos', '/reserves', '/withdrawal-quote'].some((p) => url.pathname.startsWith(p))) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

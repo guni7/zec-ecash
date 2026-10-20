@@ -4878,6 +4878,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "async-trait",
+ "axum",
  "cdk-common",
  "cdk-payment-processor",
  "devlog",
@@ -4887,6 +4888,7 @@ dependencies = [
  "pczt",
  "rand 0.8.8",
  "rusqlite",
+ "serde",
  "serde_json",
  "tokio",
  "tracing",

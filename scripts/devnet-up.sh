@@ -37,6 +37,13 @@ status() {
   if [ "$n" -ge 2 ]; then verdict="can sign"; else verdict="CANNOT SIGN (need 2 of 3)"; fi
   echo "guardians      up:${up:- none}  down:${down:- none}  -> $n/3, $verdict"
   if port_open 50051; then echo "zec-processor  up (127.0.0.1:50051)"; else echo "zec-processor  DOWN"; fi
+  r=$(curl -s -m 2 http://127.0.0.1:8095/reserves | grep -o '"state":"[a-z]*"' | cut -d'"' -f4)
+  case "$r" in
+    ok) echo "reserves       ok (zec-ecash-cli reserves for the numbers)" ;;
+    violated) echo "reserves       VIOLATED: deposit quotes refused (zec-ecash-cli reserves)" ;;
+    "") echo "reserves       no answer on 127.0.0.1:8095" ;;
+    *) echo "reserves       $r (no check completed yet)" ;;
+  esac
   if curl -s -m 2 http://127.0.0.1:8085/v1/info >/dev/null; then echo "cdk-mintd      up (127.0.0.1:8085)"; else echo "cdk-mintd      DOWN"; fi
   if port_open 5173; then
     if curl -s -m 2 --cacert web/certs/rootCA.pem "$(mint_url)/v1/info" >/dev/null 2>&1; then

@@ -10,6 +10,8 @@
 mod backend;
 mod config;
 mod frost_signer;
+mod reserves;
+mod status;
 mod store;
 mod withdraw;
 
@@ -53,9 +55,11 @@ async fn main() -> anyhow::Result<()> {
         cfg.frost_pubkeys.display()
     );
     let ufvk = ufvk.encode(&zec_wallet::regtest::regtest_network());
-    let wallet = Wallet::open_or_import_ufvk(&ufvk, &cfg.mint_db, &cfg.lightwalletd)
+    let mut wallet = Wallet::open_or_import_ufvk(&ufvk, &cfg.mint_db, &cfg.lightwalletd)
         .await
         .with_context(|| format!("cannot open the mint reserve wallet {}", cfg.mint_db.display()))?;
+    // Reserve notes below the deposit depth are neither spendable nor counted as spendable.
+    wallet.set_min_confirmations(cfg.min_confirmations)?;
     tracing::info!(address = %wallet.address()?, "mint reserve wallet (view-only)");
     signer.log_guardians().await;
     let signer = Arc::new(signer);
@@ -67,6 +71,12 @@ async fn main() -> anyhow::Result<()> {
 
     let backend = Arc::new(backend::ZecBackend::new(cfg.clone(), store, wallet, signer));
     backend.start().await?;
+    let (monitor, status_backend) = (backend.reserve_monitor(), backend.clone());
+    tokio::spawn(async move {
+        if let Err(e) = status::serve(cfg.status_addr, monitor, status_backend).await {
+            tracing::error!("{e:#}");
+        }
+    });
 
     // PaymentProcessorServer binds inside a background task, so a busy port (e.g. an old
     // processor still shutting down) would otherwise fail silently while we report "serving".

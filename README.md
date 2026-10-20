@@ -216,16 +216,20 @@ the defaults below differ; every code path is the same as on regtest, which stay
 | new wallet / UFVK birthday | block 2 | chain tip - 100 (stored in the wallet DB) |
 | ports: mintd, processor gRPC, status, guardians, POS | 8085, 50051, 8095, 7101-3, 8090 | +1000: 9085, 51051, 9095, 8101-3, 9090 |
 | mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` |
-| keys | `scripts/devnet-reset.sh --new-keys` | `scripts/mainnet-dkg.sh` |
+| keys | `scripts/devnet-reset.sh --new-keys` (runs `scripts/devnet-dkg.sh`) | distributed ceremony, one guardian per machine (`docs/deploy-mainnet.md`) |
 
 - Chain access is only the light-wallet gRPC (GetLatestBlock, GetTransaction, GetBlock,
   SendTransaction, GetTreeState), so no local node is needed.
 - Labels: on mainnet every log line starts with `MAINNET`, every binary prints a
   `*** MAINNET (real ZEC) ***` banner, and `devwallet send` / `zec-ecash-cli withdraw` refuse
   unless given `--confirm-mainnet`.
-- `scripts/mainnet-dkg.sh` runs a fresh 2-of-3 DKG into `mainnet/keys/` (files mode 600) and
-  refuses if any key exists there. It runs all three guardians on one machine: move each
-  `guardian-N.key` to its own machine afterwards; any two shares can spend the reserve.
+- Keys come from a distributed DKG: each guardian runs
+  `guardian dkg --id N --threshold 2 --participants 3` on its own machine (again after each
+  delivery), the operator carries the round-1 files to everyone and each round-2 file only to its
+  recipient, the processor host makes `mint.ufvk` from `frost-pubkeys.json`, and
+  `guardian verify` checks all three machines agree. Each guardian writes only its own key share
+  (mode 600) and the public key package. `scripts/devnet-dkg.sh` runs the same ceremony on one
+  machine for the devnet only and refuses `ZEC_NETWORK=mainnet`.
 - The reserve cap (`ZEC_MAX_RESERVE`, default 1,000,000 zat) refuses deposit quotes that could
   push the reserve past it, counting open quotes; `GET /deposit-quote?amount=` says why.
 - Devnet scripts pin `ZEC_NETWORK=regtest` and stop processes by their devnet ports, so they

@@ -1,7 +1,10 @@
 //! Guardian: holds one 2-of-3 FROST share of the mint's spend key and signs withdrawals only
 //! after verifying them itself (see policy.rs). Plain HTTP on loopback.
 //!
-//!   guardian dkg part1|part2|part3 --id N     # one DKG step (scripts/dkg runs all of them)
+//!   guardian dkg --id N --threshold 2 --participants 3   # distributed DKG on this guardian's
+//!                                             # own machine; run again after each file delivery
+//!   guardian verify --id N                    # key share + pubkeys + UFVK agree, here and with
+//!                                             # the other guardians (see dkg.rs)
 //!   guardian check-ufvk --id N                # UFVK's ak == my group key; print first address
 //!   guardian serve --id N                     # HTTP on 127.0.0.1:710N (MAINNET: 810N)
 //!
@@ -12,14 +15,15 @@
 //!   keys/guardian-N.key      this guardian's KeyPackage (secret; survives resets)
 //!   keys/frost-pubkeys.json  the group's public key package
 //!   keys/mint.ufvk           the reserve's UFVK (written by `zec-processor make-ufvk`)
-//!   keys/dkg/                DKG exchange; secret packages are deleted after part 3
+//!   dkg/{state,inbox,outbox} the ceremony's working files (see dkg.rs)
 //!   guardian-N.signed.json   quote id -> sighash signed (mint-DB state; reset with it)
 //! Nothing here generates keys implicitly: missing key files are a startup error.
+mod dkg;
 mod nonces;
 mod policy;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -36,10 +40,10 @@ use axum::{
 };
 use zcash_keys::keys::UnifiedAddressRequest;
 use zec_frost::{
-    MAX_SIGNERS, MIN_SIGNERS,
+    MAX_SIGNERS,
     redpallas::{
         self as frost, Identifier, SigningPackage,
-        keys::{KeyPackage, PublicKeyPackage, dkg},
+        keys::{KeyPackage, PublicKeyPackage},
     },
     wire::{Refusal, Round1Request, Round1Response, Round2Request, Round2Response, Status},
 };
@@ -52,8 +56,12 @@ const MAX_ACTIONS: usize = 64;
 struct Args {
     cmd: Vec<String>,
     id: u16,
+    threshold: Option<u16>,
+    participants: Option<u16>,
     dir: PathBuf,
     mint: String,
+    /// `serve`: address to listen on (default 127.0.0.1:710N, MAINNET 810N).
+    listen: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
@@ -61,15 +69,23 @@ fn parse_args() -> Result<Args> {
     let mut args = Args {
         cmd: vec![],
         id: 0,
+        threshold: None,
+        participants: None,
         dir: network.state_dir().into(),
         mint: format!("http://127.0.0.1:{}", network.port(8085)),
+        listen: None,
     };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--id" => args.id = it.next().context("--id N")?.parse().context("--id must be 1..=3")?,
             "--dir" => args.dir = it.next().context("--dir PATH")?.into(),
+            "--threshold" => args.threshold = Some(it.next().context("--threshold T")?.parse().context("--threshold")?),
+            "--participants" => {
+                args.participants = Some(it.next().context("--participants N")?.parse().context("--participants")?)
+            }
             "--mint" => args.mint = it.next().context("--mint URL")?,
+            "--listen" => args.listen = Some(it.next().context("--listen HOST:PORT")?),
             _ => args.cmd.push(a),
         }
     }
@@ -110,12 +126,11 @@ async fn main() -> Result<()> {
         network.is_mainnet().then_some("MAINNET "),
     )?;
     match args.cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["dkg", "part1"] => dkg_part1(&args),
-        ["dkg", "part2"] => dkg_part2(&args),
-        ["dkg", "part3"] => dkg_part3(&args),
+        ["dkg"] => dkg::dkg(&args),
+        ["verify"] => dkg::verify(&args),
         ["check-ufvk"] => check_ufvk(&args).map(|_| ()),
         ["serve"] => serve(args).await,
-        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg part1|part2|part3|check-ufvk|serve>"),
+        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg --threshold 2 --participants 3|verify|check-ufvk|serve>"),
     }
 }
 
@@ -123,10 +138,6 @@ async fn main() -> Result<()> {
 
 fn keys_dir(args: &Args) -> PathBuf {
     args.dir.join("keys")
-}
-
-fn dkg_dir(args: &Args) -> PathBuf {
-    keys_dir(args).join("dkg")
 }
 
 fn key_path(args: &Args) -> PathBuf {
@@ -138,62 +149,10 @@ fn read_key_file<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Res
     ensure!(
         path.exists(),
         "{what} {} is missing. Keys are never generated implicitly: restore it, or create new \
-         keys with scripts/devnet-reset.sh --new-keys (MAINNET: scripts/mainnet-dkg.sh)",
+         keys with scripts/devnet-reset.sh --new-keys (MAINNET: the DKG ceremony in docs/deploy-mainnet.md)",
         path.display()
     );
     read_json(path)
-}
-
-fn dkg_part1(args: &Args) -> Result<()> {
-    let (secret, package) = dkg::part1(ident(args.id)?, MAX_SIGNERS, MIN_SIGNERS, rand::thread_rng())?;
-    write_json(&dkg_dir(args).join(format!("r1-secret-{}.json", args.id)), &secret)?;
-    write_json(&dkg_dir(args).join(format!("r1-{}.json", args.id)), &package)?;
-    println!("guardian {}: DKG round 1 package published", args.id);
-    Ok(())
-}
-
-/// Everyone else's round-1 packages.
-fn others_r1(args: &Args) -> Result<BTreeMap<Identifier, dkg::round1::Package>> {
-    (1..=MAX_SIGNERS)
-        .filter(|&j| j != args.id)
-        .map(|j| Ok((ident(j)?, read_json(&dkg_dir(args).join(format!("r1-{j}.json")))?)))
-        .collect()
-}
-
-fn dkg_part2(args: &Args) -> Result<()> {
-    let secret_path = dkg_dir(args).join(format!("r1-secret-{}.json", args.id));
-    let (secret, packages) = dkg::part2(read_json(&secret_path)?, &others_r1(args)?)?;
-    write_json(&dkg_dir(args).join(format!("r2-secret-{}.json", args.id)), &secret)?;
-    fs::remove_file(&secret_path)?;
-    for (to, package) in packages {
-        let to: u16 = (1..=MAX_SIGNERS).find(|&j| ident(j).ok() == Some(to)).context("unknown recipient")?;
-        // Devnet: a shared directory stands in for the private channel to each peer.
-        write_json(&dkg_dir(args).join(format!("r2-{}-to-{to}.json", args.id)), &package)?;
-    }
-    println!("guardian {}: DKG round 2 packages sent", args.id);
-    Ok(())
-}
-
-fn dkg_part3(args: &Args) -> Result<()> {
-    let secret_path = dkg_dir(args).join(format!("r2-secret-{}.json", args.id));
-    let r2: BTreeMap<Identifier, dkg::round2::Package> = (1..=MAX_SIGNERS)
-        .filter(|&j| j != args.id)
-        .map(|j| Ok((ident(j)?, read_json(&dkg_dir(args).join(format!("r2-{j}-to-{}.json", args.id)))?)))
-        .collect::<Result<_>>()?;
-    let (key_package, pubkeys) = dkg::part3(&read_json(&secret_path)?, &others_r1(args)?, &r2)?;
-    write_json(&key_path(args), &key_package)?;
-    write_json(&dkg_dir(args).join(format!("pubkeys-{}.json", args.id)), &pubkeys)?;
-    fs::remove_file(&secret_path)?;
-    for j in (1..=MAX_SIGNERS).filter(|&j| j != args.id) {
-        let _ = fs::remove_file(dkg_dir(args).join(format!("r2-{j}-to-{}.json", args.id)));
-    }
-    println!(
-        "guardian {}: key share saved to {}; group key {}",
-        args.id,
-        key_path(args).display(),
-        hex::encode(zec_frost::group_key_bytes(&pubkeys)?)
-    );
-    Ok(())
 }
 
 // ---- keys ----
@@ -211,7 +170,7 @@ fn check_ufvk(args: &Args) -> Result<Keys> {
     let key: KeyPackage = read_key_file(&key_path(args), "key share")?;
     let pubkeys: PublicKeyPackage = read_key_file(&keys_dir(args).join("frost-pubkeys.json"), "group public keys")?;
     let ufvk_path = keys_dir(args).join("mint.ufvk");
-    ensure!(ufvk_path.exists(), "{} is missing (run scripts/devnet-reset.sh --new-keys; MAINNET: scripts/mainnet-dkg.sh)", ufvk_path.display());
+    ensure!(ufvk_path.exists(), "{} is missing: the processor host makes it from frost-pubkeys.json (`zec-processor make-ufvk`); copy it here (devnet: scripts/devnet-reset.sh --new-keys)", ufvk_path.display());
     let ufvk = zec_wallet::frost::read_ufvk(&ufvk_path)?;
     ensure!(key.verifying_key() == pubkeys.verifying_key(), "key share and frost-pubkeys.json disagree");
     ensure!(*key.identifier() == ident(args.id)?, "guardian-{}.key belongs to another guardian", args.id);
@@ -249,7 +208,10 @@ async fn serve(args: Args) -> Result<()> {
     let keys = check_ufvk(&args)?;
     let signed_path = args.dir.join(format!("guardian-{}.signed.json", args.id));
     let signed = if signed_path.exists() { read_json(&signed_path)? } else { HashMap::new() };
-    let addr = format!("127.0.0.1:{}", zec_wallet::network::current().port(7100 + args.id));
+    let addr = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| format!("127.0.0.1:{}", zec_wallet::network::current().port(7100 + args.id)));
     let g = Arc::new(Guardian {
         id: args.id,
         keys,

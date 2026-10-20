@@ -76,7 +76,7 @@ if [ "$NEW_KEYS" = 1 ]; then
     if [ -e "$p" ]; then rm -rf "$p"; echo "  deleted $p"; fi
   done
   echo "new keys:"
-  scripts/dkg
+  scripts/devnet-dkg.sh
   cargo run -q -p devwallet -- new
   cargo run -q -p zec-ecash-cli -- init
   ADDR=$(cargo run -q -p devwallet -- address)

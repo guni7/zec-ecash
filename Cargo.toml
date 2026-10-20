@@ -41,6 +41,12 @@ serde = { version = "1", features = ["derive"] }
 # HTTP for the guardian protocol; versions already locked via tonic.
 axum = "0.8"
 hyper = "1"
+# Guardian transport: HMAC-SHA256 request auth and TLS (rustls with ring, as tonic uses).
+sha2 = "0.10"
+hmac = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 # Terminal QR codes for ecash tokens (zec-ecash-cli).

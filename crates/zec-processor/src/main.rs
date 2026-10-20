@@ -65,7 +65,7 @@ async fn main() -> anyhow::Result<()> {
              {}/keys/, or create new ones with {}",
             path.display(),
             cfg.network.state_dir().display(),
-            if cfg.network.is_mainnet() { "scripts/mainnet-dkg.sh" } else { "scripts/devnet-reset.sh --new-keys" }
+            if cfg.network.is_mainnet() { "the DKG ceremony in docs/deploy-mainnet.md" } else { "scripts/devnet-reset.sh --new-keys" }
         );
     }
 

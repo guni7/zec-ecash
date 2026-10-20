@@ -61,6 +61,8 @@ impl QuoteStore {
              );
              -- Withdrawals (melts). State only moves forward:
              -- UNPAID -> BUILT -> SIGNING -> BROADCAST -> MINED, or -> FAILED.
+             -- mined_height/mined_block_hash: where the node last had the tx mined (NULL while
+             -- unmined, and again after a reorg drops that block).
              CREATE TABLE IF NOT EXISTS zec_withdrawal (
                  quote_id      TEXT PRIMARY KEY,
                  address       TEXT NOT NULL,
@@ -70,9 +72,21 @@ impl QuoteStore {
                  pczt_blob     BLOB,
                  txid          TEXT,
                  expiry_height INTEGER,
-                 updated_at    INTEGER NOT NULL
+                 updated_at    INTEGER NOT NULL,
+                 mined_height     INTEGER,
+                 mined_block_hash TEXT
              );",
         )?;
+        // Databases created before reorg tracking lack the last two columns.
+        let has_hash: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('zec_withdrawal') WHERE name = 'mined_block_hash'")?
+            .exists([])?;
+        if !has_hash {
+            conn.execute_batch(
+                "ALTER TABLE zec_withdrawal ADD COLUMN mined_height INTEGER;
+                 ALTER TABLE zec_withdrawal ADD COLUMN mined_block_hash TEXT;",
+            )?;
+        }
         Ok(QuoteStore { conn: Mutex::new(conn) })
     }
 
@@ -221,6 +235,16 @@ pub struct Withdrawal {
     /// 0 = never expires.
     pub expiry_height: Option<u32>,
     pub updated_at: u64,
+    /// Where the node last had the transaction mined; `None` while unmined.
+    pub mined_at: Option<MinedAt>,
+}
+
+/// A block a withdrawal's transaction was seen mined in.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct MinedAt {
+    pub height: u32,
+    /// Hex, display order.
+    pub block_hash: String,
 }
 
 fn now() -> i64 {
@@ -231,7 +255,8 @@ fn now() -> i64 {
 }
 
 const WITHDRAWAL_COLUMNS: &str =
-    "quote_id, address, amount_zats, fee_zats, state, pczt_blob, txid, expiry_height, updated_at";
+    "quote_id, address, amount_zats, fee_zats, state, pczt_blob, txid, expiry_height, updated_at, \
+     mined_height, mined_block_hash";
 
 fn row_to_withdrawal(r: &rusqlite::Row) -> rusqlite::Result<(Withdrawal, String)> {
     Ok((
@@ -245,6 +270,10 @@ fn row_to_withdrawal(r: &rusqlite::Row) -> rusqlite::Result<(Withdrawal, String)
             txid: r.get(6)?,
             expiry_height: r.get(7)?,
             updated_at: r.get::<_, i64>(8)? as u64,
+            mined_at: match (r.get::<_, Option<u32>>(9)?, r.get::<_, Option<String>>(10)?) {
+                (Some(height), Some(block_hash)) => Some(MinedAt { height, block_hash }),
+                _ => None,
+            },
         },
         r.get(4)?,
     ))
@@ -320,6 +349,16 @@ impl QuoteStore {
              WHERE quote_id = ?1 AND state = 'SIGNING'",
             params![quote_id, txid, now()],
         )? == 1)
+    }
+
+    /// Records (or with `None`, clears) the block the withdrawal's transaction is mined in.
+    pub fn set_mined_at(&self, quote_id: &str, at: Option<&MinedAt>) -> Result<()> {
+        let conn = self.conn.lock().unwrap();
+        conn.execute(
+            "UPDATE zec_withdrawal SET mined_height = ?2, mined_block_hash = ?3 WHERE quote_id = ?1",
+            params![quote_id, at.map(|m| m.height), at.map(|m| m.block_hash.as_str())],
+        )?;
+        Ok(())
     }
 
     /// Moves `quote_id` to `to` only if it is currently in one of `from`. Returns whether it moved,
@@ -445,6 +484,27 @@ pub(crate) mod tests {
         assert_eq!(paid.len(), 1);
         assert_eq!(paid[0].received_zats, 50_000, "t1 must not be counted twice");
         assert!(paid[0].paid_emitted);
+    }
+
+    #[test]
+    fn old_withdrawal_table_gains_mined_columns() {
+        let path = temp_db("migrate");
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "CREATE TABLE zec_withdrawal (quote_id TEXT PRIMARY KEY, address TEXT NOT NULL,
+                     amount_zats INTEGER NOT NULL, fee_zats INTEGER NOT NULL, state TEXT NOT NULL,
+                     pczt_blob BLOB, txid TEXT, expiry_height INTEGER, updated_at INTEGER NOT NULL);
+                 INSERT INTO zec_withdrawal VALUES ('old', 'a', 1, 1, 'MINED', NULL, 'tx', 0, 0);",
+            )
+            .unwrap();
+        let store = QuoteStore::open(&path).unwrap();
+        assert_eq!(store.withdrawal("old").unwrap().unwrap().mined_at, None);
+        let at = MinedAt { height: 7, block_hash: "ab".into() };
+        store.set_mined_at("old", Some(&at)).unwrap();
+        drop(store);
+        let store = QuoteStore::open(&path).unwrap();
+        assert_eq!(store.withdrawal("old").unwrap().unwrap().mined_at, Some(at), "reopen does not migrate twice");
     }
 
     #[test]

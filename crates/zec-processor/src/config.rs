@@ -29,6 +29,10 @@ pub struct Config {
     pub min_zats: u64,
     pub max_zats: u64,
     pub sync_interval: Duration,
+    /// cdk-mintd's SQLite DB, read (read-only) for the reserve check's issued/redeemed totals.
+    pub cdk_mint_db: PathBuf,
+    /// Where `GET /reserves` is served.
+    pub status_addr: SocketAddr,
 }
 
 impl Config {
@@ -70,6 +74,10 @@ impl Config {
             min_zats: num("ZEC_MIN_ZATS", "1000")?,
             max_zats: num("ZEC_MAX_ZATS", "100000000000")?, // 1000 ZEC
             sync_interval: Duration::from_secs(num("ZEC_SYNC_INTERVAL_SECS", "7")?),
+            cdk_mint_db: get("ZEC_CDK_MINT_DB", "devnet/mint/cdk-mintd.sqlite").into(),
+            status_addr: get("ZEC_STATUS_ADDR", "127.0.0.1:8095")
+                .parse()
+                .context("ZEC_STATUS_ADDR must be host:port")?,
         })
     }
 }

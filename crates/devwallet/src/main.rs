@@ -53,14 +53,24 @@ async fn main() -> Result<()> {
             PathBuf::from("devnet").join(format!("{name}.sqlite"))
         }
     });
+    // Same depth as zec-processor when ZEC_MIN_CONFIRMATIONS is set, so `--ufvk` shows the
+    // reserve as the processor sees it; otherwise the wallet default (1).
+    let min_confirmations: Option<u32> = match std::env::var("ZEC_MIN_CONFIRMATIONS") {
+        Ok(v) => Some(v.trim().parse().context("ZEC_MIN_CONFIRMATIONS must be a whole number")?),
+        Err(_) => None,
+    };
     let open = || async {
-        match &ufvk_path {
+        let mut wallet = match &ufvk_path {
             Some(u) => {
                 let ufvk = zec_wallet::frost::read_ufvk(u)?.encode(&zec_wallet::regtest::regtest_network());
                 Wallet::open_or_import_ufvk(&ufvk, &db_path, &lightwalletd).await
             }
             None => Wallet::open_or_create(&seed_path, &db_path, &lightwalletd).await,
+        }?;
+        if let Some(n) = min_confirmations {
+            wallet.set_min_confirmations(n)?;
         }
+        anyhow::Ok(wallet)
     };
     if ufvk_path.is_some() && matches!(cmd.first().map(String::as_str), Some("new" | "send")) {
         bail!("--ufvk wallets are view-only: no `new` or `send`");
@@ -91,6 +101,10 @@ async fn main() -> Result<()> {
                 println!("{name:<12} {:>30} {:>30}", fmt_zats(p.spendable), fmt_zats(p.pending));
             }
             let PoolBalance { spendable, pending } = b.total();
+            println!(
+                "spendable = at least {} confirmation(s); pending includes coinbase younger than 100 blocks",
+                wallet.min_confirmations()
+            );
             if spendable == 0 && pending > 0 {
                 println!("Nothing spendable yet. Coinbase needs 100 confirmations: ./devnet/mine.sh 110");
             }

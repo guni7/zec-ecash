@@ -50,6 +50,16 @@ export default defineConfig({
         ws: true, // NUT-17 subscriptions (the CLI waits for quotes over websockets)
         rewrite: (path) => path.replace(/^\/mint/, ''),
       },
+      // zec-processor's status endpoints (JSON): the reserve check, and why a withdrawal can't
+      // be quoted (the mint only says "Unit unsupported").
+      '/reserves': {
+        target: process.env.ZEC_STATUS_UPSTREAM ?? 'http://127.0.0.1:8095',
+        changeOrigin: true,
+      },
+      '/withdrawal-quote': {
+        target: process.env.ZEC_STATUS_UPSTREAM ?? 'http://127.0.0.1:8095',
+        changeOrigin: true,
+      },
       // NUT-18 point of sale (crates/pos); its requests' HTTP transport points here too.
       '/pos': {
         target: process.env.ZEC_POS_UPSTREAM ?? 'http://127.0.0.1:8090',

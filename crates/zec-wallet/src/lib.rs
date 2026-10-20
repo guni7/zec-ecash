@@ -19,15 +19,16 @@ use rand::{RngCore, rngs::OsRng};
 use secrecy::SecretVec;
 use zcash_client_backend::{
     data_api::{
-        Account, AccountBirthday, AccountPurpose, InputSource, WalletRead, WalletWrite,
+        Account, AccountBirthday, AccountPurpose, InputSource, OutputLockStore, WalletRead, WalletWrite,
+        locking::{LockError, LockOwner},
         wallet::{
             ConfirmationsPolicy, SpendingKeys, create_pczt_from_proposal, create_proposed_transactions,
             extract_and_store_transaction_from_pczt, propose_standard_transfer_to_address,
         },
     },
     fees::StandardFeeRule,
-    proto::service::{BlockId, RawTransaction, compact_tx_streamer_client::CompactTxStreamerClient},
-    wallet::OvkPolicy,
+    proto::service::{BlockId, RawTransaction, TxFilter, compact_tx_streamer_client::CompactTxStreamerClient},
+    wallet::{OutputRef, OvkPolicy},
 };
 use zcash_client_sqlite::{WalletDb, util::SystemClock, wallet::init::init_wallet_db};
 use zcash_keys::{
@@ -38,8 +39,8 @@ use pczt::roles::prover::Prover;
 use zcash_primitives::transaction::builder::{BundlePadding, cached_orchard_proving_key};
 use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
-    ShieldedPool,
-    consensus::{BlockHeight, BranchId},
+    PoolType, ShieldedPool,
+    consensus::{BlockHeight, BranchId, COINBASE_MATURITY_BLOCKS},
     local_consensus::LocalNetwork,
     value::Zatoshis,
 };
@@ -47,9 +48,13 @@ use zip32::AccountId;
 
 pub use zcash_protocol::TxId;
 
-/// Notes are spendable after 1 confirmation (ZIP 315's default is 3 or 10), so one
-/// `./devnet/mine.sh 1` after a send is enough. Coinbase maturity (100) is consensus, not this.
-const CONFIRMATIONS: ConfirmationsPolicy = ConfirmationsPolicy::MIN;
+/// Default depth before a note counts as spendable: 1, so one `./devnet/mine.sh 1` after a send
+/// is enough on regtest. Change it with [`Wallet::set_min_confirmations`].
+const DEFAULT_MIN_CONFIRMATIONS: u32 = 1;
+
+/// Owner of the locks that keep immature coinbase notes out of note selection and out of the
+/// spendable balance (see [`Wallet::lock_immature_coinbase`]).
+const COINBASE_LOCK: LockOwner = LockOwner::new(*b"zec-wallet: immature coinbase   ");
 const SYNC_BATCH_SIZE: u32 = 1000;
 
 type Db = WalletDb<rusqlite::Connection, LocalNetwork, SystemClock, OsRng>;
@@ -150,6 +155,8 @@ pub struct Wallet {
     seed: Option<Vec<u8>>,
     account_id: DbAccountId,
     lightwalletd: String,
+    /// Applied to every note, the wallet's own change included.
+    confirmations: ConfirmationsPolicy,
 }
 
 impl Wallet {
@@ -217,7 +224,25 @@ impl Wallet {
             }
         };
 
-        Ok(Wallet { db, db_path: db_path.to_owned(), seed, account_id, lightwalletd: lightwalletd.to_owned() })
+        Ok(Wallet {
+            db,
+            db_path: db_path.to_owned(),
+            seed,
+            account_id,
+            lightwalletd: lightwalletd.to_owned(),
+            confirmations: symmetric_policy(DEFAULT_MIN_CONFIRMATIONS)?,
+        })
+    }
+
+    /// Sets the depth a note needs before it counts as spendable and may be selected for a
+    /// payment. It applies to every note alike (received or the wallet's own change).
+    pub fn set_min_confirmations(&mut self, n: u32) -> Result<()> {
+        self.confirmations = symmetric_policy(n)?;
+        Ok(())
+    }
+
+    pub fn min_confirmations(&self) -> u32 {
+        self.confirmations.untrusted().get()
     }
 
     /// The account's unified full viewing key.
@@ -318,14 +343,93 @@ impl Wallet {
         )
         .await
         .map_err(|e| anyhow!("sync failed: {e}"))?;
-        Ok(self.db.chain_height()?.context("no chain tip after sync")?.into())
+        let tip: u32 = self.db.chain_height()?.context("no chain tip after sync")?.into();
+        self.lock_immature_coinbase(tip)?;
+        Ok(tip)
+    }
+
+    /// The reserve as the chain backs it, as of the last sync: the value of every shielded note
+    /// that is
+    /// - mined at least `min_confirmations` deep, or is change from the wallet's own mined
+    ///   transaction (whose inputs were already confirmed), and
+    /// - not spent by a *mined* transaction (a spend that is only broadcast still leaves the
+    ///   note on chain; the caller counts that withdrawal as in flight instead), and
+    /// - not immature coinbase.
+    ///
+    /// Dust (notes at or below the ZIP 317 marginal fee, which `balance` leaves out) is counted:
+    /// it is still value the mint holds.
+    pub fn confirmed_reserve(&self, min_confirmations: u32) -> Result<ConfirmedReserve> {
+        let tip: u32 = self.db.chain_height()?.context("wallet has not synced yet")?.into();
+        let target = tip + 1;
+        let conn = rusqlite::Connection::open(&self.db_path)?;
+        let mut zats = 0u64;
+        for pool in ["ironwood", "orchard", "sapling"] {
+            let sum: i64 = conn.query_row(
+                &format!(
+                    "SELECT COALESCE(SUM(n.value), 0) FROM {pool}_received_notes n
+                     JOIN transactions t ON t.id_tx = n.transaction_id
+                     WHERE t.mined_height IS NOT NULL
+                       AND (n.is_change = 1 OR t.mined_height + ?1 <= ?2)
+                       AND NOT (t.tx_index = 0 AND t.mined_height + ?3 > ?2)
+                       AND NOT EXISTS (
+                           SELECT 1 FROM {pool}_received_note_spends s
+                           JOIN transactions st ON st.id_tx = s.transaction_id
+                           WHERE s.{pool}_received_note_id = n.id AND st.mined_height IS NOT NULL)"
+                ),
+                rusqlite::params![min_confirmations, target, COINBASE_MATURITY_BLOCKS],
+                |r| r.get(0),
+            )?;
+            zats += u64::try_from(sum).context("negative note sum")?;
+        }
+        Ok(ConfirmedReserve { tip, zats })
+    }
+
+    /// Consensus (ZIP 213) lets a shielded coinbase output be spent only 100 blocks after it was
+    /// mined, but the wallet library enforces that for transparent coinbase only. So each
+    /// immature shielded coinbase note is locked until the height before it matures: locked
+    /// notes are never selected and count as pending, not spendable. The locks expire by
+    /// themselves. Returns how many notes are immature at `tip`.
+    pub fn lock_immature_coinbase(&mut self, tip: u32) -> Result<usize> {
+        let target = tip + 1; // a new transaction would be mined here
+        let conn = rusqlite::Connection::open(&self.db_path)?;
+        let mut immature = vec![];
+        for (pool, table, index) in [
+            (ShieldedPool::Ironwood, "ironwood_received_notes", "action_index"),
+            (ShieldedPool::Orchard, "orchard_received_notes", "action_index"),
+            (ShieldedPool::Sapling, "sapling_received_notes", "output_index"),
+        ] {
+            let mut stmt = conn.prepare(&format!(
+                "SELECT t.txid, n.{index}, t.mined_height FROM {table} n
+                 JOIN transactions t ON t.id_tx = n.transaction_id
+                 WHERE t.tx_index = 0 AND t.mined_height IS NOT NULL
+                   AND t.mined_height + ?1 > ?2"
+            ))?;
+            let rows = stmt.query_map(rusqlite::params![COINBASE_MATURITY_BLOCKS, target], |r| {
+                Ok((r.get::<_, Vec<u8>>(0)?, r.get::<_, u32>(1)?, r.get::<_, u32>(2)?))
+            })?;
+            for row in rows {
+                let (txid, index, mined) = row?;
+                let txid = TxId::from_bytes(txid.try_into().map_err(|_| anyhow!("bad txid in wallet DB"))?);
+                immature.push((OutputRef::new(txid, PoolType::Shielded(pool), index), mined));
+            }
+        }
+        for (output, mined) in &immature {
+            // Selectable again once target_height > expiry, i.e. at mined + 100.
+            let expiry = BlockHeight::from(mined + COINBASE_MATURITY_BLOCKS - 1);
+            match self.db.lock_outputs(std::slice::from_ref(output), COINBASE_LOCK, expiry) {
+                // Already locked by an in-flight proposal (so not selectable anyway), or gone.
+                Ok(_) | Err(LockError::LockFailure(_)) => {}
+                Err(e) => return Err(anyhow!("cannot lock immature coinbase note: {e}")),
+            }
+        }
+        Ok(immature.len())
     }
 
     /// Balances as of the last sync.
     pub fn balance(&self) -> Result<Balances> {
         let summary = self
             .db
-            .get_wallet_summary(CONFIRMATIONS)?
+            .get_wallet_summary(self.confirmations)?
             .context("wallet has no summary yet; sync first")?;
         let bal = summary
             .account_balances()
@@ -383,7 +487,7 @@ impl Wallet {
             &regtest::regtest_network(),
             StandardFeeRule::Zip317,
             self.account_id,
-            CONFIRMATIONS,
+            self.confirmations,
             to,
             amount,
             None,
@@ -392,7 +496,12 @@ impl Wallet {
             None,
             None,
         )
-        .map_err(|e| anyhow!("cannot build proposal: {e}"))
+        .map_err(|e| match e {
+            zcash_client_backend::data_api::error::Error::InsufficientFunds { available, required } => {
+                anyhow::Error::new(InsufficientFunds { available: available.into(), required: required.into() })
+            }
+            e => anyhow!("cannot build proposal: {e}"),
+        })
     }
 
     /// The ZIP 317 fee a payment of `zats` to `to` would cost right now. Builds nothing.
@@ -466,6 +575,82 @@ impl Wallet {
     pub fn tx_mined_height(&self, txid: TxId) -> Result<Option<u32>> {
         Ok(self.db.get_tx_height(txid)?.map(u32::from))
     }
+
+    /// The node's current chain tip height (which drops after a reorg to a shorter chain, while
+    /// the wallet's own scanned height does not).
+    pub async fn node_tip(&mut self) -> Result<u32> {
+        let tip = connect(&self.lightwalletd)
+            .await?
+            .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
+            .await?
+            .into_inner();
+        u32::try_from(tip.height).context("tip height out of range")
+    }
+
+    /// Where the node has `txid` in its current main chain, asked now (not as of the last
+    /// sync: the wallet only notices a reorg once the new chain is longer than what it
+    /// scanned). `None` when the transaction is in the mempool, only on a side chain, or
+    /// unknown to the node.
+    pub async fn tx_inclusion(&mut self, txid: TxId) -> Result<Option<TxInclusion>> {
+        let mut client = connect(&self.lightwalletd).await?;
+        let raw = match client.get_transaction(TxFilter { block: None, index: 0, hash: txid.as_ref().to_vec() }).await {
+            Ok(r) => r.into_inner(),
+            Err(status) if status.code() == tonic::Code::NotFound => return Ok(None),
+            Err(status) => bail!("node lookup of {txid} failed: {status}"),
+        };
+        // 0 = mempool, u64::MAX = mined only on a side chain (see RawTransaction::height).
+        let height = match raw.height {
+            0 | u64::MAX => return Ok(None),
+            h => u32::try_from(h).context("transaction height out of range")?,
+        };
+        let block = client
+            .get_block(BlockId { height: height.into(), hash: vec![] })
+            .await
+            .with_context(|| format!("cannot fetch block {height}"))?
+            .into_inner();
+        // Display order, as zebrad's getblockhash prints it.
+        let block_hash = hex::encode(block.hash.iter().rev().copied().collect::<Vec<u8>>());
+        Ok(Some(TxInclusion { height, block_hash }))
+    }
+}
+
+/// The wallet's spendable notes can't cover a payment plus its fee. Returned (inside
+/// `anyhow::Error`, so callers can downcast) by `send`, `quote_fee` and `build_pczt`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct InsufficientFunds {
+    /// Spendable value, zats.
+    pub available: u64,
+    /// Payment plus fee, zats.
+    pub required: u64,
+}
+
+impl std::fmt::Display for InsufficientFunds {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "insufficient spendable funds: have {} zat, need {} zat including the fee", self.available, self.required)
+    }
+}
+
+impl std::error::Error for InsufficientFunds {}
+
+/// See [`Wallet::confirmed_reserve`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfirmedReserve {
+    /// Height the wallet had scanned to.
+    pub tip: u32,
+    pub zats: u64,
+}
+
+/// A transaction's place in the node's current main chain.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TxInclusion {
+    pub height: u32,
+    /// Hex, in display (byte-reversed) order.
+    pub block_hash: String,
+}
+
+fn symmetric_policy(n: u32) -> Result<ConfirmationsPolicy> {
+    let n = std::num::NonZeroU32::new(n).context("confirmation depth must be at least 1")?;
+    Ok(ConfirmationsPolicy::new_symmetrical(n, true))
 }
 
 /// Parses a txid in its usual display form (byte-reversed hex).
@@ -566,6 +751,13 @@ async fn connect(url: &str) -> Result<CompactTxStreamerClient<tonic::transport::
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn confirmation_depth_is_symmetric_and_nonzero() {
+        let p = symmetric_policy(10).unwrap();
+        assert_eq!((p.trusted().get(), p.untrusted().get()), (10, 10), "own change waits as long as received notes");
+        assert!(symmetric_policy(0).is_err());
+    }
 
     fn ivk_and_fvk(seed: &[u8]) -> (orchard::keys::IncomingViewingKey, orchard::keys::FullViewingKey) {
         let fvk = spending_key(seed).unwrap().to_unified_full_viewing_key().orchard().unwrap().clone();

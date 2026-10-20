@@ -46,14 +46,51 @@ zec-processor settings (environment, or `.env` in the repo root; defaults shown)
     ZEC_MIN_ZATS=1000                         # keep equal to min_mint/max_mint in mintd/config.toml
     ZEC_MAX_ZATS=100000000000
     ZEC_SYNC_INTERVAL_SECS=7
+    ZEC_CDK_MINT_DB=devnet/mint/cdk-mintd.sqlite   # read-only: issued/redeemed for the reserve check
+    ZEC_STATUS_ADDR=127.0.0.1:8095            # GET /reserves, /withdrawal-quote (also proxied at https://<host>:5173/...)
 
 - The processor speaks plaintext gRPC, so mintd needs `allow_insecure = true`; keep both on loopback.
+- Failed withdrawal quotes: cdk-mintd 0.18.2 reports *every* failed `zec` melt quote to the
+  wallet as "Unit unsupported" (`get_melt_custom_quote_impl` maps any backend error to
+  `UnsupportedUnit`, and cdk-payment-processor's gRPC server has already replaced our message
+  with "Could not get quote"). Stock mintd can't carry the reason, so the processor serves it:
+  `GET /withdrawal-quote?amount=<zat>&address=<ua>` answers 200 `{"ok":true,"fee":...}` or 422
+  with a `code` (`insufficient_reserve`, `invalid_address`, `amount_out_of_range`,
+  `fee_estimate_failed`) and the message. `zec-ecash-cli withdraw` asks it when a quote fails,
+  and prints e.g. "insufficient reserve: the mint can spend 275000 zat right now ..., and this
+  withdrawal needs 5020000 zat including the fee". The CLI finds both status endpoints from the
+  mint URL (override with `ZEC_STATUS_URL`).
+- Reserve invariant, checked after every sync: confirmed reserve >= outstanding ecash + withdrawals
+  in flight. `cargo run -p zec-ecash-cli -- reserves` prints the numbers (exit 1 if violated);
+  `GET /reserves` returns them as JSON (200 ok, 503 violated or not yet checked). While it is
+  violated the processor logs `RESERVE INVARIANT VIOLATED` (once a minute) and refuses new
+  deposit quotes; the mint reports that only as "Invalid payment request", so the CLI checks
+  `/reserves` and says why. The figures:
+  - confirmed reserve: shielded notes at `ZEC_MIN_CONFIRMATIONS` depth (dust included, immature
+    coinbase not), plus the mint's own change from mined withdrawals at any depth; a note that a
+    not-yet-mined withdrawal spends still counts (it is still on chain).
+  - outstanding: cdk-mintd's issued - redeemed (`keyset_amounts`, unit zat) - melt inputs still
+    PENDING.
+  - in flight: amount + fee of withdrawals whose transaction is not mined yet.
+
+  With these, a withdrawal never trips the check: when it is broadcast its ecash moves from
+  outstanding to in flight, and when it is mined it leaves the reserve and in flight together.
+  Raising `ZEC_MIN_CONFIRMATIONS` can trip it until recent deposits are that deep (a real
+  shortfall in *confirmed* reserve).
 - Withdrawals pay only unified addresses with an Orchard receiver (they land in Ironwood);
   transparent and Sapling-only addresses are rejected at quote time.
 - A withdrawal reports Pending from the moment its transaction is built until it is mined, and
   Failed only if it was never broadcast or expired unmined, because the mint refunds the ecash
   on Failed. State lives in `zec_withdrawal` in `devnet/processor.sqlite`; after a crash the
   processor fails unbroadcast withdrawals and rebroadcasts broadcast ones.
+- Reorgs: each pass asks the node (not the wallet, which notices a reorg only once the new chain
+  is longer) which block each withdrawal's tx is in, and records its height and hash. If that
+  block is replaced and the tx is no longer mined, the record is cleared, a `REORG` warning is
+  logged, and the withdrawal stays Pending and is rebroadcast (zebrad does not put transactions
+  from a dropped block back in its mempool). It settles PAID only once the block it is in now is
+  `ZEC_MIN_CONFIRMATIONS` deep. A withdrawal already PAID stays watched for 100 blocks; if its
+  block disappears it is logged as `REORG AFTER PAID` and rebroadcast (the mint can't undo PAID,
+  so raise the depth). Try it: `curl -s 127.0.0.1:18232 -d '{"method":"invalidateblock","params":["<hash>"]}'`.
 - zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
 - Signing: `make_payment` builds the PCZT and returns Pending; FROST signing runs in the
   background (the mint locks the quote during `make_payment`, and guardians read the quote
@@ -223,9 +260,14 @@ Global flags go before the command:
     cargo run -p devwallet -- --ufvk devnet/keys/mint.ufvk balance  # the mint reserve, view-only
 
 - Put the user wallet's address in `devnet/zebrad-regtest.toml` `[mining] miner_address`.
-- Coinbase needs 100 confirmations: if funds show only as pending, `./devnet/mine.sh 110`.
+- Coinbase needs 100 confirmations, shielded coinbase included (ZIP 213): the wallet locks each
+  younger coinbase note, so it shows as pending and is never picked for a payment (the wallet
+  library only checks this for transparent coinbase). On a fresh chain, `./devnet/mine.sh 110`.
 - After `send`, run `./devnet/mine.sh 1`, then `balance`. Notes are spendable after 1
-  confirmation (a regtest setting; ZIP 315's default is 3 or 10). Change goes to Ironwood.
+  confirmation (the regtest default); set `ZEC_MIN_CONFIRMATIONS` to use the processor's depth,
+  e.g. `ZEC_MIN_CONFIRMATIONS=3 cargo run -p devwallet -- --ufvk devnet/keys/mint.ufvk
+  --db devnet/mint-view.sqlite balance`. The zec-processor reserve wallet always uses
+  `ZEC_MIN_CONFIRMATIONS`, for its balance and for the notes a withdrawal may spend. Change goes to Ironwood.
 - Wallets start scanning at block 2 (Zebra rejects a tree-state request for block 0), so the
   user wallet doesn't see block 1's coinbase.
 - Sapling proving parameters are compiled in (`zcash_proofs` `bundled-prover`), so nothing is

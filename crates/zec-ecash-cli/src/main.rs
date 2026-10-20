@@ -15,6 +15,8 @@
 //!   zec-ecash-cli pending                      # tokens you sent that nobody redeemed yet
 //!   zec-ecash-cli reclaim <id>                 # take one of those back (voids that token)
 //!   zec-ecash-cli withdraw <zat> <uregtest1...>   # melt ecash to a ZEC address
+//!   zec-ecash-cli reserves                     # the processor's reserve check: confirmed ZEC
+//!                                              # reserve vs. outstanding ecash + in flight
 //!
 //! Global flags (before the command), each also settable in the environment or `.env`:
 //!   --wallet <name>   default "ecash": seed devnet/keys/<name>-wallet.seed (survives resets),
@@ -23,6 +25,9 @@
 //!                     phone uses (tokens carry it), e.g. https://<LAN-IP>:5173/mint
 //!   --mint-ca <pem>   ZEC_MINT_CA: extra CA to trust for an https mint URL (e.g. mkcert's
 //!                     rootCA.pem). The OS trust store is used too.
+//!   ZEC_STATUS_URL    zec-processor's status endpoints (/reserves, /withdrawal-quote); default:
+//!                     the mint URL without its /mint suffix (the web proxy serves both there),
+//!                     else http://127.0.0.1:8095.
 //! The seed is never created implicitly: `init` creates it once.
 mod tokens;
 
@@ -129,6 +134,9 @@ async fn run(opts: Opts) -> Result<()> {
             opts.mint_url
         );
     }
+    if cmd.first().map(String::as_str) == Some("reserves") {
+        return reserves(&opts.mint_url).await;
+    }
     let seed = read_seed(&seed_path)?;
     if cmd.first().map(String::as_str) == Some("pubkey") {
         println!("{}", tokens::p2pk_key(&seed)?.public_key());
@@ -179,9 +187,19 @@ async fn run(opts: Opts) -> Result<()> {
     match cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["deposit", zats] => {
             let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
-            let quote = wallet
-                .mint_quote(PaymentMethod::from(METHOD), Some(Amount::from(zats)), None, None)
-                .await?;
+            let quote = match wallet.mint_quote(PaymentMethod::from(METHOD), Some(Amount::from(zats)), None, None).await {
+                Ok(q) => q,
+                // The mint reports a refused quote only as "Invalid payment request"; if the
+                // reserve check is what's refusing, say so.
+                Err(e) => match fetch_reserves(&wallet.mint_url.to_string()).await {
+                    Ok((_, v)) if v["state"] == "violated" => bail!(
+                        "the mint refused the deposit quote: deposits are paused because the reserve check \
+                         fails (short by {} zat; run `reserves`). Mint said: {e}",
+                        v["shortfall_zats"].as_u64().unwrap_or(0)
+                    ),
+                    _ => return Err(e.into()),
+                },
+            };
             println!("quote {}", quote.id);
             println!("Pay {zats} zat to:\n{}", quote.request);
             println!("Waiting for the deposit to confirm (regtest: ./devnet/mine.sh 1 after paying)...");
@@ -294,13 +312,94 @@ async fn run(opts: Opts) -> Result<()> {
         _ => bail!(
             "usage: zec-ecash-cli [--wallet <name>] [--mint <url>] [--mint-ca <pem>] \
              <init|deposit <zat>|mint <quote_id>|send <zat> [--lock <pubkey>] [--dleq]|receive <token>|check <token>|\
-             pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance>"
+             pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance|reserves>"
         ),
     }
     Ok(())
 }
 
 /// Melts `zats` of ecash into a ZEC payment to `address` and waits until the mint reports the
+/// Base URL of zec-processor's status endpoints (see ZEC_STATUS_URL in the header).
+fn status_base(mint_url: &str) -> String {
+    match std::env::var("ZEC_STATUS_URL") {
+        Ok(u) => u.trim_end_matches('/').to_owned(),
+        Err(_) => match mint_url.trim_end_matches('/').strip_suffix("/mint") {
+            Some(origin) => origin.to_owned(),
+            None => "http://127.0.0.1:8095".into(),
+        },
+    }
+}
+
+/// GET a status endpoint's JSON (any HTTP status: the body says what happened).
+async fn get_status_json(url: String) -> Result<(String, serde_json::Value)> {
+    let resp = bitreq::get(url.as_str())
+        .with_timeout(15)
+        .send_async()
+        .await
+        .map_err(|e| anyhow::anyhow!("cannot reach {url}: {e} (is zec-processor running?)"))?;
+    let v = serde_json::from_str(resp.as_str().unwrap_or(""))
+        .with_context(|| format!("{url} answered {} without JSON", resp.status_code))?;
+    Ok((url, v))
+}
+
+async fn fetch_reserves(mint_url: &str) -> Result<(String, serde_json::Value)> {
+    get_status_json(format!("{}/reserves", status_base(mint_url))).await
+}
+
+/// Asks the processor why a withdrawal can't be quoted (the mint only says "Unit
+/// unsupported"). `None` if it can be, or if the processor can't be asked.
+async fn withdrawal_refusal(mint_url: &str, zats: u64, address: &str) -> Option<String> {
+    let address: String = address
+        .bytes()
+        .map(|b| if b.is_ascii_alphanumeric() { (b as char).to_string() } else { format!("%{b:02X}") })
+        .collect();
+    let url = format!("{}/withdrawal-quote?amount={zats}&address={address}", status_base(mint_url));
+    match get_status_json(url).await {
+        Ok((_, v)) if v["ok"] == false => v["error"].as_str().map(str::to_owned),
+        _ => None,
+    }
+}
+
+/// Prints the processor's latest reserve check; fails (exit 1) if it is violated or unknown.
+async fn reserves(mint_url: &str) -> Result<()> {
+    let (_, v) = fetch_reserves(mint_url).await?;
+    let n = |k: &str| v[k].as_u64().unwrap_or(0);
+    let state = v["state"].as_str().unwrap_or("?");
+    if state == "unknown" {
+        bail!("no reserve check has completed yet ({})", v["error"].as_str().unwrap_or("processor just started"));
+    }
+    let age = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)?
+        .as_secs()
+        .saturating_sub(n("checked_at"));
+    let l = &v["ledger"];
+    println!(
+        "reserve check: {}   (chain height {}, depth {}, checked {age} s ago)",
+        if state == "ok" { "OK" } else { "VIOLATED" },
+        n("chain_height"),
+        n("min_confirmations")
+    );
+    println!("confirmed reserve        {:>14} zat", n("reserve_zats"));
+    println!("outstanding + in flight  {:>14} zat", n("required_zats"));
+    println!(
+        "  outstanding ecash      {:>14} zat   (issued {} - redeemed {} - melting {})",
+        n("outstanding_zats"),
+        l["issued"].as_u64().unwrap_or(0),
+        l["redeemed"].as_u64().unwrap_or(0),
+        l["pending_melt"].as_u64().unwrap_or(0)
+    );
+    println!("  withdrawals in flight  {:>14} zat", n("in_flight_zats"));
+    if let Some(e) = v["error"].as_str() {
+        println!("latest check could not run: {e}");
+    }
+    if state == "ok" {
+        println!("surplus                  {:>14} zat", n("reserve_zats") - n("required_zats"));
+        Ok(())
+    } else {
+        bail!("reserve short by {} zat: the mint refuses new deposit quotes until it is restored", n("shortfall_zats"))
+    }
+}
+
 /// withdrawal PAID (mined) or FAILED.
 async fn withdraw(wallet: &Wallet, zats: u64, address: &str) -> Result<()> {
     let quote = melt_quote(wallet, zats, address).await?;
@@ -310,6 +409,17 @@ async fn withdraw(wallet: &Wallet, zats: u64, address: &str) -> Result<()> {
         u64::from(quote.amount),
         u64::from(quote.fee_reserve),
         u64::from(quote.amount) + u64::from(quote.fee_reserve)
+    );
+    // CDK says only "Insufficient funds", which reads like the mint's reserve; this is the
+    // wallet's own ecash.
+    let needed = u64::from(quote.amount) + u64::from(quote.fee_reserve);
+    let have = u64::from(wallet.total_balance().await?);
+    ensure!(
+        have >= needed,
+        "not enough ecash in this wallet: it holds {have} zat, and this withdrawal needs {needed} zat \
+         ({} zat + {} zat fee reserve; unused fee reserve comes back as change)",
+        u64::from(quote.amount),
+        u64::from(quote.fee_reserve)
     );
     let prepared = wallet.prepare_melt(&quote.id, HashMap::new()).await?;
     let finalized = match prepared.confirm_prefer_async().await? {
@@ -358,10 +468,15 @@ async fn melt_quote(wallet: &Wallet, zats: u64, address: &str) -> Result<MeltQuo
         amount: Some(Amount::from(zats)),
         extra: serde_json::Value::Null,
     };
-    let resp = HttpClient::new(wallet.mint_url.clone(), None)
-        .post_melt_quote(MeltQuoteRequest::Custom(request))
-        .await
-        .context("the mint refused the withdrawal quote")?;
+    let resp = match HttpClient::new(wallet.mint_url.clone(), None).post_melt_quote(MeltQuoteRequest::Custom(request)).await {
+        Ok(r) => r,
+        // cdk-mintd 0.18.2 answers every failed `zec` quote with "Unit unsupported"; ask the
+        // processor for the real reason.
+        Err(e) => match withdrawal_refusal(&wallet.mint_url.to_string(), zats, address).await {
+            Some(reason) => bail!("the mint refused the withdrawal quote: {reason}\n(the mint itself only reports: {e})"),
+            None => return Err(anyhow::Error::new(e).context("the mint refused the withdrawal quote")),
+        },
+    };
     let MeltQuoteCreateResponse::Custom((_, resp)) = resp else {
         bail!("unexpected melt quote response type");
     };

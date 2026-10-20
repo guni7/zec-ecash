@@ -40,6 +40,19 @@ body {
   font-size: 14px;
   text-align: center;
 }
+.network-badge {
+  background: var(--bad);
+  color: #fff;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-align: center;
+  padding: 8px 16px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+body.mainnet .banner { background: var(--bad); color: #fff; }
+body.mainnet main { border-top: 4px solid var(--bad); }
 main { max-width: 520px; margin: 0 auto; padding: 16px; }
 header h1 { margin: 8px 0 2px; font-size: 22px; }
 .mint { margin: 0 0 16px; color: var(--muted); font-size: 13px; word-break: break-all; }

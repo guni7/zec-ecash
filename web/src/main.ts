@@ -1,8 +1,9 @@
-// Demo ecash wallet for the zec-ecash regtest devnet. Proofs live in localStorage only.
+// Demo ecash wallet for zec-ecash: the regtest devnet, or MAINNET when built with
+// ZEC_NETWORK=mainnet (see vite.config.ts). Proofs live in localStorage only.
 //
-// The mint is reached through this page's own origin (/mint, proxied by the Vite dev server to
-// the HTTP mint), so the mint URL is https://<host>:5173/mint. Tokens carry that URL, so the CLI
-// must use exactly the same one (ZEC_MINT_URL).
+// The mint is reached through this page's own origin (/mint, proxied to the HTTP mint), so the
+// mint URL is <this origin>/mint. Tokens carry that URL, so it must be exactly the configured
+// ZEC_MINT_URL (the CLI uses the same one); on MAINNET the page refuses to work otherwise.
 import {
   Amount,
   MintOperationError,
@@ -16,8 +17,13 @@ import QRCode from 'qrcode';
 import QrScanner from 'qr-scanner';
 import { loadOrCreateKey, loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
 
+declare const __ZEC_NETWORK__: 'regtest' | 'mainnet';
+declare const __ZEC_MINT_URL__: string;
+const MAINNET = __ZEC_NETWORK__ === 'mainnet';
 const UNIT = 'zat';
 const MINT_URL = `${location.origin}/mint`;
+/** ZEC_MINT_URL the page was built for ('' if unset); tokens must name exactly this mint. */
+const CONFIGURED_MINT = __ZEC_MINT_URL__.replace(/\/+$/, '');
 const STORE_KEY = `zec-ecash-demo:proofs:${MINT_URL}`;
 const SENT_KEY = `zec-ecash-demo:last-sent:${MINT_URL}`;
 const P2PK_KEY = `zec-ecash-demo:p2pk-key:${MINT_URL}`;
@@ -150,7 +156,33 @@ async function connect(): Promise<Wallet> {
   return w;
 }
 
+/** Network badge and banner, before anything else can happen. */
+function showNetwork() {
+  if (!MAINNET) return;
+  document.title = `MAINNET · ${document.title}`;
+  document.body.classList.add('mainnet');
+  $('network-badge').hidden = false;
+  $('banner').textContent =
+    'MAINNET: real ZEC. Experimental mint; keep only small amounts here. Ecash lives only in this browser: clearing site data loses it.';
+}
+
+/** The page must be opened at the configured mint URL, or tokens would name another mint. */
+function mintUrlProblem(): string | undefined {
+  if (!CONFIGURED_MINT || CONFIGURED_MINT === MINT_URL) return undefined;
+  return `This page is open at ${location.origin}, so tokens would name ${MINT_URL}, but the mint is ${CONFIGURED_MINT}. Open ${CONFIGURED_MINT.replace(/\/mint$/, '')} instead.`;
+}
+
 async function checkMint() {
+  const problem = mintUrlProblem();
+  if (problem && MAINNET) {
+    // On MAINNET this is fatal: tokens made here would carry the wrong mint URL.
+    els.mintStatus.className = 'dot bad';
+    els.mintLine.textContent = `wrong address · ${MINT_URL}`;
+    document.querySelectorAll('button, input, textarea').forEach((el) => ((el as HTMLButtonElement).disabled = true));
+    say(problem, 'bad');
+    return;
+  }
+  if (problem) say(problem, 'bad');
   try {
     const res = await fetch(`${MINT_URL}/v1/info`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -158,7 +190,7 @@ async function checkMint() {
     const units = new Set((info.nuts?.['4']?.methods ?? []).map((m) => m.unit));
     els.mintStatus.className = 'dot ok';
     els.mintLine.textContent = `${info.name ?? 'mint'} · ${MINT_URL}` + (units.has(UNIT) ? '' : ` · no ${UNIT} unit!`);
-    if (location.hostname === 'localhost' || location.hostname === '127.0.0.1') {
+    if (!problem && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
       say(`Opened via ${location.hostname}: tokens will name ${MINT_URL}, which the phone and CLI don't use. Open the LAN address instead.`, 'bad');
     }
     await connect();
@@ -387,4 +419,5 @@ els.myPub.value = me.pub;
 void QRCode.toCanvas(els.myQr, me.pub, { errorCorrectionLevel: 'L', margin: 1, width: 220 });
 const lastSent = localStorage.getItem(SENT_KEY);
 if (lastSent) void showSent(lastSent, 'last token you created');
+showNetwork();
 void checkMint();

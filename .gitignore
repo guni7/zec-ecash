@@ -24,6 +24,9 @@ devnet/guardian-*.signed.json
 
 # Devnet runtime state: Zebra regtest chain, cdk-mintd work dir (the only mint DB; see
 # README), retired mint DBs and wallet backups, logs, scratch output
+# MAINNET state (keys, mint work dir, DBs, logs, mainnet/.env): never committed, never touched
+# by scripts/devnet-reset.sh.
+mainnet/
 devnet/zebra-state/
 devnet/mint/
 devnet/archive/

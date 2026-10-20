@@ -1,4 +1,5 @@
-//! Demo wallet CLI on the CDK wallet crate (regtest devnet; NOT for real funds).
+//! Demo wallet CLI on the CDK wallet crate: the regtest devnet by default; ZEC_NETWORK=mainnet
+//! for MAINNET (every run says so; `withdraw` then needs --confirm-mainnet).
 //!
 //!   zec-ecash-cli init                         # create this wallet's seed (never overwrites)
 //!   zec-ecash-cli deposit <zat>                # quote, print address, wait for PAID, mint
@@ -21,13 +22,15 @@
 //! Global flags (before the command), each also settable in the environment or `.env`:
 //!   --wallet <name>   default "ecash": seed devnet/keys/<name>-wallet.seed (survives resets),
 //!                     DB devnet/<name>-wallet.redb (deleted by resets). `--wallet bob` is Bob.
-//!   --mint <url>      ZEC_MINT_URL, default http://127.0.0.1:8085. Must be the exact URL the
+//!   --mint <url>      ZEC_MINT_URL, default http://127.0.0.1:8085 (MAINNET 9085). Must be the exact URL the
 //!                     phone uses (tokens carry it), e.g. https://<LAN-IP>:5173/mint
 //!   --mint-ca <pem>   ZEC_MINT_CA: extra CA to trust for an https mint URL (e.g. mkcert's
 //!                     rootCA.pem). The OS trust store is used too.
 //!   ZEC_STATUS_URL    zec-processor's status endpoints (/reserves, /withdrawal-quote); default:
 //!                     the mint URL without its /mint suffix (the web proxy serves both there),
-//!                     else http://127.0.0.1:8095.
+//!                     else http://127.0.0.1:8095 (MAINNET 9095).
+//! MAINNET: paths are under mainnet/ instead of devnet/, and ZEC_MINT_URL / ZEC_MINT_CA come only
+//! from mainnet/.env or the flags, never from the shell (scripts/env.sh exports the devnet's).
 //! The seed is never created implicitly: `init` creates it once.
 mod tokens;
 
@@ -65,6 +68,9 @@ const STATUS_POLL: Duration = Duration::from_secs(15);
 const DEPOSIT_WAIT: Duration = Duration::from_secs(3600);
 
 struct Opts {
+    network: zec_network::Network,
+    /// --confirm-mainnet: allow a MAINNET withdrawal.
+    confirm_mainnet: bool,
     wallet: String,
     mint_url: String,
     mint_ca: Option<PathBuf>,
@@ -74,13 +80,21 @@ struct Opts {
 }
 
 fn parse_opts() -> Result<Opts> {
-    let dotenv = tokens::read_dotenv(Path::new(".env"));
-    let env = |k: &str| std::env::var(k).ok().or_else(|| dotenv.get(k).cloned());
+    let network = zec_network::init()?;
+    let dotenv = tokens::read_dotenv(&network.state_dir().join(".env"));
+    let dotenv = if network.is_mainnet() { dotenv } else { tokens::read_dotenv(Path::new(".env")) };
+    let env = |k: &str| match network.is_mainnet() {
+        // The shell may hold the devnet's values (scripts/env.sh); never use them on mainnet.
+        true => dotenv.get(k).cloned(),
+        false => std::env::var(k).ok().or_else(|| dotenv.get(k).cloned()),
+    };
     let configured_url = env("ZEC_MINT_URL").filter(|v| !v.is_empty());
     let mut o = Opts {
+        network,
+        confirm_mainnet: false,
         wallet: "ecash".into(),
         mint_url_defaulted: configured_url.is_none(),
-        mint_url: configured_url.unwrap_or_else(|| "http://127.0.0.1:8085".into()),
+        mint_url: configured_url.unwrap_or_else(|| format!("http://127.0.0.1:{}", network.port(8085))),
         mint_ca: env("ZEC_MINT_CA").filter(|v| !v.is_empty()).map(PathBuf::from),
         cmd: vec![],
     };
@@ -93,6 +107,7 @@ fn parse_opts() -> Result<Opts> {
                 o.mint_url_defaulted = false;
             }
             "--mint-ca" => o.mint_ca = Some(args.next().context("--mint-ca needs a file")?.into()),
+            "--confirm-mainnet" => o.confirm_mainnet = true,
             _ => o.cmd.push(arg),
         }
     }
@@ -119,19 +134,29 @@ fn main() -> Result<()> {
 }
 
 async fn run(opts: Opts) -> Result<()> {
+    let network = opts.network;
+    let dir = network.state_dir();
     // CDK's own log lines go to a size-capped file, not the terminal (devlog crate).
-    let _ = devlog::init(Path::new("devnet/logs"), "cli", "warn");
-    let seed_path = PathBuf::from(format!("devnet/keys/{}-wallet.seed", opts.wallet));
-    let db_path = PathBuf::from(format!("devnet/{}-wallet", opts.wallet));
+    let _ = devlog::init_labeled(&dir.join("logs"), "cli", "warn", network.is_mainnet().then_some("MAINNET "));
+    if network.is_mainnet() {
+        eprintln!("zec-ecash-cli: *** MAINNET (real ZEC) *** wallet `{}`, mint {}", opts.wallet, opts.mint_url);
+    }
+    let seed_path = dir.join(format!("keys/{}-wallet.seed", opts.wallet));
+    let db_path = dir.join(format!("{}-wallet", opts.wallet));
     let cmd = opts.cmd;
     if cmd.first().map(String::as_str) == Some("init") {
-        return init_seed(&seed_path);
+        return init_seed(&seed_path, network);
     }
     if opts.mint_url_defaulted {
         eprintln!(
             "warning: ZEC_MINT_URL is not set; using {} (tokens from the phone name a different \
-             URL and won't match). Run `source scripts/env.sh` or pass --mint.",
-            opts.mint_url
+             URL and won't match). {}",
+            opts.mint_url,
+            if network.is_mainnet() {
+                "Set it in mainnet/.env or pass --mint."
+            } else {
+                "Run `source scripts/env.sh` or pass --mint."
+            }
         );
     }
     if cmd.first().map(String::as_str) == Some("reserves") {
@@ -202,7 +227,11 @@ async fn run(opts: Opts) -> Result<()> {
             };
             println!("quote {}", quote.id);
             println!("Pay {zats} zat to:\n{}", quote.request);
-            println!("Waiting for the deposit to confirm (regtest: ./devnet/mine.sh 1 after paying)...");
+            if network.is_mainnet() {
+                println!("MAINNET: waiting for the deposit to confirm (the mint needs its confirmation depth; ~75 s per block)...");
+            } else {
+                println!("Waiting for the deposit to confirm (regtest: ./devnet/mine.sh 1 after paying)...");
+            }
             let proofs = wallet
                 .wait_and_mint_quote(quote, SplitTarget::default(), None, DEPOSIT_WAIT)
                 .await
@@ -235,6 +264,10 @@ async fn run(opts: Opts) -> Result<()> {
         }
         ["withdraw", zats, address] => {
             let zats: u64 = zats.parse().context("<zats> must be a whole number")?;
+            ensure!(
+                !network.is_mainnet() || opts.confirm_mainnet,
+                "MAINNET withdrawal of {zats} zat refused: this sends real ZEC. Re-run with --confirm-mainnet if you mean it."
+            );
             withdraw(&wallet, zats, address).await?;
         }
         ["send", zats, rest @ ..] => {
@@ -325,7 +358,7 @@ fn status_base(mint_url: &str) -> String {
         Ok(u) => u.trim_end_matches('/').to_owned(),
         Err(_) => match mint_url.trim_end_matches('/').strip_suffix("/mint") {
             Some(origin) => origin.to_owned(),
-            None => "http://127.0.0.1:8095".into(),
+            None => format!("http://127.0.0.1:{}", zec_network::current().port(8095)),
         },
     }
 }
@@ -444,7 +477,11 @@ async fn withdraw(wallet: &Wallet, zats: u64, address: &str) -> Result<()> {
         MeltOutcome::Paid(done) => done,
         MeltOutcome::Pending(pending) => {
             println!("Pending: the transaction is being built and broadcast; waiting for it to be mined");
-            println!("(regtest: ./devnet/mine.sh 1)...");
+            if zec_network::current().is_mainnet() {
+                println!("(MAINNET: ~75 s per block)...");
+            } else {
+                println!("(regtest: ./devnet/mine.sh 1)...");
+            }
             // Also ask the mint for the quote's status now and then: a status request makes the
             // mint check with zec-processor, which settles the melt even if a push was missed.
             let nudge = HttpClient::new(wallet.mint_url.clone(), None);
@@ -568,7 +605,7 @@ async fn sync_keysets(wallet: &Wallet) -> Result<()> {
 }
 
 /// `init`: creates the wallet seed (64 random bytes, hex). Refuses to overwrite one.
-fn init_seed(seed_path: &Path) -> Result<()> {
+fn init_seed(seed_path: &Path, network: zec_network::Network) -> Result<()> {
     if seed_path.exists() {
         bail!("{} already exists; delete it first if you really want a new ecash wallet", seed_path.display());
     }
@@ -578,7 +615,7 @@ fn init_seed(seed_path: &Path) -> Result<()> {
         fs::create_dir_all(dir)?;
     }
     fs::write(seed_path, hex::encode(seed))?;
-    println!("Created {} (devnet only, keep it out of git)", seed_path.display());
+    println!("Created {} ({} wallet; keep it out of git)", seed_path.display(), network.label());
     Ok(())
 }
 

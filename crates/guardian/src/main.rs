@@ -1,11 +1,14 @@
 //! Guardian: holds one 2-of-3 FROST share of the mint's spend key and signs withdrawals only
-//! after verifying them itself (see policy.rs). Devnet only: plain HTTP on loopback.
+//! after verifying them itself (see policy.rs). Plain HTTP on loopback.
 //!
 //!   guardian dkg part1|part2|part3 --id N     # one DKG step (scripts/dkg runs all of them)
 //!   guardian check-ufvk --id N                # UFVK's ak == my group key; print first address
-//!   guardian serve --id N                     # HTTP on 127.0.0.1:710N
+//!   guardian serve --id N                     # HTTP on 127.0.0.1:710N (MAINNET: 810N)
 //!
-//! Files (under --dir, default devnet):
+//! ZEC_NETWORK=mainnet: addresses and the UFVK are mainnet, the default --dir is mainnet, the
+//! default --mint is http://127.0.0.1:9085, and every log line starts with MAINNET.
+//!
+//! Files (under --dir, default devnet or mainnet):
 //!   keys/guardian-N.key      this guardian's KeyPackage (secret; survives resets)
 //!   keys/frost-pubkeys.json  the group's public key package
 //!   keys/mint.ufvk           the reserve's UFVK (written by `zec-processor make-ufvk`)
@@ -54,7 +57,13 @@ struct Args {
 }
 
 fn parse_args() -> Result<Args> {
-    let mut args = Args { cmd: vec![], id: 0, dir: "devnet".into(), mint: "http://127.0.0.1:8085".into() };
+    let network = zec_wallet::network::init()?;
+    let mut args = Args {
+        cmd: vec![],
+        id: 0,
+        dir: network.state_dir().into(),
+        mint: format!("http://127.0.0.1:{}", network.port(8085)),
+    };
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
@@ -89,15 +98,24 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
-    // Size-capped: devnet/logs/guardian-N.log (+ rotated files), see the devlog crate.
-    devlog::init(&args.dir.join("logs"), &format!("guardian-{}", args.id), "info")?;
+    let network = zec_wallet::network::current();
+    if network.is_mainnet() {
+        eprintln!("guardian {}: *** MAINNET (real ZEC) *** keys in {}", args.id, keys_dir(&args).display());
+    }
+    // Size-capped: <dir>/logs/guardian-N.log (+ rotated files), see the devlog crate.
+    devlog::init_labeled(
+        &args.dir.join("logs"),
+        &format!("guardian-{}", args.id),
+        "info",
+        network.is_mainnet().then_some("MAINNET "),
+    )?;
     match args.cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
         ["dkg", "part1"] => dkg_part1(&args),
         ["dkg", "part2"] => dkg_part2(&args),
         ["dkg", "part3"] => dkg_part3(&args),
         ["check-ufvk"] => check_ufvk(&args).map(|_| ()),
         ["serve"] => serve(args).await,
-        _ => bail!("usage: guardian --id N [--dir devnet] [--mint URL] <dkg part1|part2|part3|check-ufvk|serve>"),
+        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg part1|part2|part3|check-ufvk|serve>"),
     }
 }
 
@@ -120,7 +138,7 @@ fn read_key_file<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Res
     ensure!(
         path.exists(),
         "{what} {} is missing. Keys are never generated implicitly: restore it, or create new \
-         keys with scripts/devnet-reset.sh --new-keys",
+         keys with scripts/devnet-reset.sh --new-keys (MAINNET: scripts/mainnet-dkg.sh)",
         path.display()
     );
     read_json(path)
@@ -193,7 +211,7 @@ fn check_ufvk(args: &Args) -> Result<Keys> {
     let key: KeyPackage = read_key_file(&key_path(args), "key share")?;
     let pubkeys: PublicKeyPackage = read_key_file(&keys_dir(args).join("frost-pubkeys.json"), "group public keys")?;
     let ufvk_path = keys_dir(args).join("mint.ufvk");
-    ensure!(ufvk_path.exists(), "{} is missing (run scripts/devnet-reset.sh --new-keys)", ufvk_path.display());
+    ensure!(ufvk_path.exists(), "{} is missing (run scripts/devnet-reset.sh --new-keys; MAINNET: scripts/mainnet-dkg.sh)", ufvk_path.display());
     let ufvk = zec_wallet::frost::read_ufvk(&ufvk_path)?;
     ensure!(key.verifying_key() == pubkeys.verifying_key(), "key share and frost-pubkeys.json disagree");
     ensure!(*key.identifier() == ident(args.id)?, "guardian-{}.key belongs to another guardian", args.id);
@@ -205,9 +223,10 @@ fn check_ufvk(args: &Args) -> Result<Keys> {
     let (ua, _) = ufvk
         .default_address(UnifiedAddressRequest::ORCHARD)
         .map_err(|e| anyhow!("address: {e:?}"))?;
-    let first_address = ua.encode(&zec_wallet::regtest::regtest_network());
-    println!("guardian {}: UFVK ak matches group key {}", args.id, hex::encode(group));
-    println!("guardian {}: mint address {first_address}", args.id);
+    let network = zec_wallet::network::current();
+    let first_address = ua.encode(&network.params());
+    println!("guardian {} ({}): UFVK ak matches group key {}", args.id, network.label(), hex::encode(group));
+    println!("guardian {} ({}): mint address {first_address}", args.id, network.label());
     let fvk = ufvk.orchard().context("UFVK has no Orchard key")?.clone();
     Ok(Keys { key, pubkeys, fvk, first_address })
 }
@@ -230,7 +249,7 @@ async fn serve(args: Args) -> Result<()> {
     let keys = check_ufvk(&args)?;
     let signed_path = args.dir.join(format!("guardian-{}.signed.json", args.id));
     let signed = if signed_path.exists() { read_json(&signed_path)? } else { HashMap::new() };
-    let addr = format!("127.0.0.1:{}", 7100 + args.id);
+    let addr = format!("127.0.0.1:{}", zec_wallet::network::current().port(7100 + args.id));
     let g = Arc::new(Guardian {
         id: args.id,
         keys,

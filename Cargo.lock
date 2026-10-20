@@ -2678,6 +2678,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "zec-network",
 ]
 
 [[package]]
@@ -4854,6 +4855,7 @@ dependencies = [
  "rand 0.8.8",
  "serde_json",
  "tokio",
+ "zec-network",
 ]
 
 [[package]]
@@ -4870,6 +4872,14 @@ dependencies = [
  "serde",
  "serde_json",
  "tokio",
+]
+
+[[package]]
+name = "zec-network"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -4925,6 +4935,7 @@ dependencies = [
  "zcash_proofs",
  "zcash_protocol",
  "zec-frost",
+ "zec-network",
  "zip32",
 ]
 

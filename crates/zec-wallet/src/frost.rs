@@ -108,7 +108,7 @@ pub fn ufvk_ak(ufvk: &UnifiedFullViewingKey) -> Result<[u8; 32]> {
 }
 
 /// The Orchard-format receiver (raw 43 bytes) of a withdrawal address, after the same validation
-/// the processor applies (regtest unified address with an Orchard receiver).
+/// the processor applies (a unified address of the current network with an Orchard receiver).
 pub fn orchard_receiver(addr: &str) -> Result<[u8; 43]> {
     match crate::validate_withdrawal_address(addr)? {
         zcash_keys::address::Address::Unified(ua) => {
@@ -121,8 +121,8 @@ pub fn orchard_receiver(addr: &str) -> Result<[u8; 43]> {
 /// Reads a UFVK file (as written by `zec-processor make-ufvk`).
 pub fn read_ufvk(path: &std::path::Path) -> Result<UnifiedFullViewingKey> {
     let s = std::fs::read_to_string(path).with_context(|| format!("cannot read {}", path.display()))?;
-    UnifiedFullViewingKey::decode(&crate::regtest::regtest_network(), s.trim())
-        .map_err(|e| anyhow!("{}: not a regtest UFVK: {e}", path.display()))
+    UnifiedFullViewingKey::decode(&crate::network::params(), s.trim())
+        .map_err(|e| anyhow!("{}: not a {} UFVK: {e}", path.display(), crate::network::current().label()))
 }
 
 #[cfg(test)]

@@ -1,4 +1,6 @@
-//! Point of sale over NUT-18 payment requests (regtest devnet; NOT for real funds).
+//! Point of sale over NUT-18 payment requests: the regtest devnet by default; ZEC_NETWORK=mainnet
+//! for MAINNET (state in mainnet/, settings from mainnet/.env only, port 9090, every log line
+//! starts with MAINNET).
 //!
 //! Ported from thesimplekid/cashu-payment-backend `src/pos_server.rs` (MIT) to cdk 0.18.2, with:
 //! - unit `zat` only (the original allowed sat/usd);
@@ -54,14 +56,15 @@ const UNIT: &str = "zat";
 const MIN_REFUND_LEAD_SECS: u64 = 60;
 
 struct Config {
+    network: zec_network::Network,
     listen: String,
     mint_url: String,
     pos_url: String,
     seed: PathBuf,
 }
 
-fn dotenv() -> HashMap<String, String> {
-    std::fs::read_to_string(".env")
+fn dotenv(path: &Path) -> HashMap<String, String> {
+    std::fs::read_to_string(path)
         .unwrap_or_default()
         .lines()
         .map(str::trim)
@@ -72,9 +75,16 @@ fn dotenv() -> HashMap<String, String> {
 }
 
 fn config() -> Result<Config> {
-    let env = dotenv();
-    let get = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty()).or_else(|| env.get(k).cloned());
-    let mint_url = get("ZEC_MINT_URL").context("ZEC_MINT_URL not set (source scripts/env.sh)")?;
+    let network = zec_network::init()?;
+    // MAINNET: only mainnet/.env (the shell may hold the devnet's values from scripts/env.sh).
+    let env = if network.is_mainnet() { dotenv(&network.state_dir().join(".env")) } else { dotenv(Path::new(".env")) };
+    let get = |k: &str| match network.is_mainnet() {
+        true => env.get(k).cloned().filter(|v| !v.is_empty()),
+        false => std::env::var(k).ok().filter(|v| !v.is_empty()).or_else(|| env.get(k).cloned()),
+    };
+    let mint_url = get("ZEC_MINT_URL").with_context(|| {
+        if network.is_mainnet() { "ZEC_MINT_URL not set in mainnet/.env" } else { "ZEC_MINT_URL not set (source scripts/env.sh)" }
+    })?;
     let pos_url = get("ZEC_POS_URL").unwrap_or_else(|| {
         format!("{}/pos", mint_url.trim_end_matches('/').trim_end_matches("/mint"))
     });
@@ -84,10 +94,11 @@ fn config() -> Result<Config> {
         unsafe { std::env::set_var("SSL_CERT_FILE", ca) };
     }
     Ok(Config {
-        listen: get("ZEC_POS_ADDR").unwrap_or_else(|| "127.0.0.1:8090".into()),
+        network,
+        listen: get("ZEC_POS_ADDR").unwrap_or_else(|| format!("127.0.0.1:{}", network.port(8090))),
         mint_url,
         pos_url,
-        seed: PathBuf::from("devnet/keys/pos-wallet.seed"),
+        seed: network.state_dir().join("keys/pos-wallet.seed"),
     })
 }
 
@@ -115,7 +126,15 @@ type Shared = Arc<Pos>;
 
 fn main() -> Result<()> {
     let cfg = config()?;
-    devlog::init(Path::new("devnet/logs"), "pos", "info,cdk=warn")?;
+    if cfg.network.is_mainnet() {
+        eprintln!("pos: *** MAINNET (real ZEC) *** mint {}", cfg.mint_url);
+    }
+    devlog::init_labeled(
+        &cfg.network.state_dir().join("logs"),
+        "pos",
+        "info,cdk=warn",
+        cfg.network.is_mainnet().then_some("MAINNET "),
+    )?;
     tokio::runtime::Runtime::new()?.block_on(run(cfg))
 }
 
@@ -129,9 +148,10 @@ async fn run(cfg: Config) -> Result<()> {
         .try_into()
         .map_err(|_| anyhow!("seed must be 64 bytes"))?;
     let key = p2pk_key(&seed)?;
-    let db = WalletRedbDatabase::new(Path::new("devnet/pos-wallet.redb"))?;
+    let dir = cfg.network.state_dir();
+    let db = WalletRedbDatabase::new(&dir.join("pos-wallet.redb"))?;
     let wallet = Wallet::new(&cfg.mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, Some(0))?;
-    let conn = Connection::open("devnet/pos.sqlite")?;
+    let conn = Connection::open(dir.join("pos.sqlite"))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS pos_quote (
              id         TEXT PRIMARY KEY,

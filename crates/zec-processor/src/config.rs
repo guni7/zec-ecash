@@ -1,12 +1,15 @@
 //! Processor settings from the environment, with `.env` (in the working directory) as a
-//! fallback. Real environment variables win over `.env`.
+//! fallback. Real environment variables win over `.env`. Defaults depend on ZEC_NETWORK (read
+//! from the environment only): paths under devnet/ or mainnet/, mainnet ports +1000.
 use std::{collections::HashMap, fs, net::SocketAddr, path::PathBuf, time::Duration};
 
 use anyhow::{Context, Result};
+use zec_wallet::network::Network;
 
 #[derive(Debug, Clone)]
 pub struct Config {
-    /// Zebra's light-wallet gRPC (plaintext).
+    pub network: Network,
+    /// Light-wallet gRPC server (ZEC_LWD_URL): plaintext for http://, TLS for https://.
     pub lightwalletd: String,
     /// The mint reserve's unified full viewing key (Orchard `ak` = FROST group key), written by
     /// `zec-processor make-ufvk`. The processor holds no spending key at all.
@@ -37,7 +40,10 @@ pub struct Config {
 
 impl Config {
     pub fn load() -> Result<Self> {
-        let dotenv = fs::read_to_string(".env").map(|s| parse_dotenv(&s)).unwrap_or_default();
+        let network = zec_wallet::network::init()?;
+        // The devnet's settings file is ./.env; mainnet's is mainnet/.env (never the devnet's).
+        let env_file = if network.is_mainnet() { network.state_dir().join(".env") } else { PathBuf::from(".env") };
+        let dotenv = fs::read_to_string(&env_file).map(|s| parse_dotenv(&s)).unwrap_or_default();
         let get = |key: &str, default: &str| -> String {
             std::env::var(key)
                 .ok()
@@ -47,47 +53,57 @@ impl Config {
         let num = |key: &str, default: &str| -> Result<u64> {
             get(key, default).parse().with_context(|| format!("{key} must be a whole number"))
         };
+        let dir = network.state_dir();
+        let path = |key: &str, rel: &str| -> PathBuf { get(key, &dir.join(rel).to_string_lossy()).into() };
+        let port = |p: u16| network.port(p);
+        // ZEC_LIGHTWALLETD is the old name.
+        let lightwalletd = std::env::var("ZEC_LWD_URL")
+            .ok()
+            .or_else(|| dotenv.get("ZEC_LWD_URL").cloned())
+            .unwrap_or_else(|| get("ZEC_LIGHTWALLETD", network.default_lightwalletd()));
 
         Ok(Config {
-            lightwalletd: get("ZEC_LIGHTWALLETD", "http://127.0.0.1:9067"),
-            mint_ufvk: get("ZEC_MINT_UFVK", "devnet/keys/mint.ufvk").into(),
-            mint_db: get("ZEC_MINT_DB", "devnet/mint-reserve.sqlite").into(),
-            frost_pubkeys: get("ZEC_FROST_PUBKEYS", "devnet/keys/frost-pubkeys.json").into(),
+            network,
+            lightwalletd,
+            mint_ufvk: path("ZEC_MINT_UFVK", "keys/mint.ufvk"),
+            mint_db: path("ZEC_MINT_DB", "mint-reserve.sqlite"),
+            frost_pubkeys: path("ZEC_FROST_PUBKEYS", "keys/frost-pubkeys.json"),
             guardians: get(
                 "ZEC_GUARDIANS",
-                "http://127.0.0.1:7101,http://127.0.0.1:7102,http://127.0.0.1:7103",
+                &(1..=3).map(|i| format!("http://127.0.0.1:{}", port(7100 + i))).collect::<Vec<_>>().join(","),
             )
             .split(',')
             .map(|u| u.trim().trim_end_matches('/').to_owned())
             .filter(|u| !u.is_empty())
             .collect(),
             guardian_timeout: Duration::from_secs(num("ZEC_GUARDIAN_TIMEOUT_SECS", "30")?),
-            processor_db: get("ZEC_PROCESSOR_DB", "devnet/processor.sqlite").into(),
-            grpc_addr: get("ZEC_GRPC_ADDR", "127.0.0.1:50051")
+            processor_db: path("ZEC_PROCESSOR_DB", "processor.sqlite"),
+            grpc_addr: get("ZEC_GRPC_ADDR", &format!("127.0.0.1:{}", port(50051)))
                 .parse()
                 .context("ZEC_GRPC_ADDR must be host:port")?,
             min_confirmations: resolve_min_confirmations(
                 std::env::var("ZEC_MIN_CONFIRMATIONS").ok().or_else(|| dotenv.get("ZEC_MIN_CONFIRMATIONS").cloned()).as_deref(),
                 std::env::var("ZEC_CONFIRMATIONS").ok().or_else(|| dotenv.get("ZEC_CONFIRMATIONS").cloned()).as_deref(),
-                zcash_protocol::consensus::Parameters::network_type(&zec_wallet::regtest::regtest_network()),
+                zcash_protocol::consensus::Parameters::network_type(&network.params()),
             )?,
             min_zats: num("ZEC_MIN_ZATS", "1000")?,
             max_zats: num("ZEC_MAX_ZATS", "100000000000")?, // 1000 ZEC
             sync_interval: Duration::from_secs(num("ZEC_SYNC_INTERVAL_SECS", "7")?),
-            cdk_mint_db: get("ZEC_CDK_MINT_DB", "devnet/mint/cdk-mintd.sqlite").into(),
-            status_addr: get("ZEC_STATUS_ADDR", "127.0.0.1:8095")
+            cdk_mint_db: path("ZEC_CDK_MINT_DB", "mint/cdk-mintd.sqlite"),
+            status_addr: get("ZEC_STATUS_ADDR", &format!("127.0.0.1:{}", port(8095)))
                 .parse()
                 .context("ZEC_STATUS_ADDR must be host:port")?,
         })
     }
 }
 
-/// Default confirmation depth per network: 1 on regtest (blocks are mined on demand), 10
-/// elsewhere (ZIP 315's depth for outputs received from others).
+/// Default confirmation depth per network type: 1 on regtest (blocks are mined on demand), 10
+/// elsewhere (ZIP 315's depth for outputs received from others); see
+/// `Network::default_min_confirmations`.
 pub fn default_min_confirmations(network: zcash_protocol::consensus::NetworkType) -> u32 {
     match network {
-        zcash_protocol::consensus::NetworkType::Regtest => 1,
-        _ => 10,
+        zcash_protocol::consensus::NetworkType::Regtest => Network::Regtest.default_min_confirmations(),
+        _ => Network::Mainnet.default_min_confirmations(),
     }
 }
 

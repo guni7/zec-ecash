@@ -1,0 +1,8 @@
+[package]
+name = "zec-network"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+zcash_protocol.workspace = true
+anyhow.workspace = true

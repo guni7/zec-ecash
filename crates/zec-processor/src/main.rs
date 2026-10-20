@@ -26,13 +26,20 @@ use zec_wallet::Wallet;
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
-    // Size-capped: devnet/logs/processor.log (+ .1 .. .5), see the devlog crate.
-    let log = devlog::init(
-        std::path::Path::new("devnet/logs"),
+    let network = zec_wallet::network::init()?;
+    // Size-capped: <devnet|mainnet>/logs/processor.log (+ .1 .. .5), see the devlog crate.
+    // On mainnet every line starts with "MAINNET".
+    let log = devlog::init_labeled(
+        &network.state_dir().join("logs"),
         "processor",
         "info,zcash_client_backend=warn,zcash_client_sqlite=warn",
+        network.is_mainnet().then_some("MAINNET "),
     )?;
-    eprintln!("zec-processor: logging to {}", log.display());
+    if network.is_mainnet() {
+        eprintln!("zec-processor: *** MAINNET (real ZEC) *** logging to {}", log.display());
+    } else {
+        eprintln!("zec-processor: logging to {}", log.display());
+    }
     let cfg = config::Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("make-ufvk") {
         return make_ufvk(&cfg);
@@ -49,14 +56,16 @@ async fn main() -> anyhow::Result<()> {
         println!("It is not watched or retried any more; pay the recipient by other means if needed.");
         return Ok(());
     }
-    tracing::info!(?cfg, "starting zec-processor");
+    tracing::info!(network = cfg.network.label(), ?cfg, "starting zec-processor");
     // Fail loudly: the processor never generates or replaces the reserve's keys.
     for (path, what) in [(&cfg.mint_ufvk, "ZEC_MINT_UFVK"), (&cfg.frost_pubkeys, "ZEC_FROST_PUBKEYS")] {
         anyhow::ensure!(
             path.exists(),
             "{what} file {} is missing. The reserve's keys are never generated implicitly: restore \
-             devnet/keys/, or create new ones with scripts/devnet-reset.sh --new-keys",
-            path.display()
+             {}/keys/, or create new ones with {}",
+            path.display(),
+            cfg.network.state_dir().display(),
+            if cfg.network.is_mainnet() { "scripts/mainnet-dkg.sh" } else { "scripts/devnet-reset.sh --new-keys" }
         );
     }
 
@@ -68,13 +77,13 @@ async fn main() -> anyhow::Result<()> {
         cfg.mint_ufvk.display(),
         cfg.frost_pubkeys.display()
     );
-    let ufvk = ufvk.encode(&zec_wallet::regtest::regtest_network());
+    let ufvk = ufvk.encode(&cfg.network.params());
     let mut wallet = Wallet::open_or_import_ufvk(&ufvk, &cfg.mint_db, &cfg.lightwalletd)
         .await
         .with_context(|| format!("cannot open the mint reserve wallet {}", cfg.mint_db.display()))?;
     // Reserve notes below the deposit depth are neither spendable nor counted as spendable.
     wallet.set_min_confirmations(cfg.min_confirmations)?;
-    tracing::info!(address = %wallet.address()?, "mint reserve wallet (view-only)");
+    tracing::info!(address = %wallet.address()?, birthday = wallet.birthday()?, "mint reserve wallet (view-only)");
     signer.log_guardians().await;
     let signer = Arc::new(signer);
     let store = store::QuoteStore::open(&cfg.processor_db)?;
@@ -116,7 +125,7 @@ async fn main() -> anyhow::Result<()> {
 /// Coordinator step after the DKG: the mint's UFVK, with Orchard `ak` = the guardians' group
 /// key and fresh random `nk`/`rivk`. Refuses to overwrite an existing one (it is the reserve).
 fn make_ufvk(cfg: &config::Config) -> anyhow::Result<()> {
-    anyhow::ensure!(!cfg.mint_ufvk.exists(), "{} already exists; delete it only with the whole devnet", cfg.mint_ufvk.display());
+    anyhow::ensure!(!cfg.mint_ufvk.exists(), "{} already exists; it is the reserve's key: never replace it while funds are held", cfg.mint_ufvk.display());
     let pubkeys: zec_frost::redpallas::keys::PublicKeyPackage = serde_json::from_slice(
         &std::fs::read(&cfg.frost_pubkeys).with_context(|| format!("cannot read {}", cfg.frost_pubkeys.display()))?,
     )?;
@@ -124,7 +133,7 @@ fn make_ufvk(cfg: &config::Config) -> anyhow::Result<()> {
     if let Some(dir) = cfg.mint_ufvk.parent() {
         std::fs::create_dir_all(dir)?;
     }
-    std::fs::write(&cfg.mint_ufvk, ufvk.encode(&zec_wallet::regtest::regtest_network()) + "\n")?;
+    std::fs::write(&cfg.mint_ufvk, ufvk.encode(&cfg.network.params()) + "\n")?;
     println!("wrote {} (Orchard ak = FROST group key)", cfg.mint_ufvk.display());
     Ok(())
 }

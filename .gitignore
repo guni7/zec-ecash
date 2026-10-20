@@ -28,6 +28,7 @@ devnet/zebra-state/
 devnet/mint/
 devnet/archive/
 devnet/*.log
+devnet/logs/
 devnet/quote.json
 
 # Demo web wallet: dependencies, build output, and the mkcert TLS key/certs (machine-specific)

@@ -1,0 +1,33 @@
+# MAINNET cdk-mintd on the main host, behind Caddy (127.0.0.1:9085), talking to zec-processor's
+# gRPC (127.0.0.1:51051). Initialise its work dir once first (docs/deploy-mainnet.md, "Mint").
+# Install: sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#          sudo systemctl enable --now zec-mintd
+# Logs: daily files in mainnet/mint/logs/ (bounded by scripts/log-trim.sh, see the deploy doc);
+# stdout/stderr in journald.
+[Unit]
+Description=cdk-mintd for zec-ecash (MAINNET, real ZEC)
+After=network-online.target zec-processor.service
+Wants=network-online.target zec-processor.service
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/.env
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/mint/cdk-mintd.sqlite
+ConditionPathExists=/home/gunit/zec-ecash/mintd/config.mainnet.toml
+ConditionPathExists=/home/gunit/.cargo/bin/cdk-mintd
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gunit
+Group=gunit
+WorkingDirectory=/home/gunit/zec-ecash
+Environment=ZEC_NETWORK=mainnet
+# CDK_MINTD_MNEMONIC comes from here (and nowhere else).
+EnvironmentFile=/home/gunit/zec-ecash/mainnet/.env
+ExecStart=/home/gunit/.cargo/bin/cdk-mintd -w /home/gunit/zec-ecash/mainnet/mint --enable-logging
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -125,7 +125,9 @@ function explain(e: unknown): string {
     return `The mint refused: ${e.message}`;
   }
   if (e instanceof NetworkError || e instanceof TypeError) {
-    return `Mint unreachable at ${MINT_URL}. Is the devnet (scripts/devnet-up.sh) and the web server running?`;
+    return MAINNET
+      ? `Mint unreachable at ${MINT_URL}. Check your connection and try again; if it persists, the mint may be down for maintenance. Your ecash stays in this browser.`
+      : `Mint unreachable at ${MINT_URL}. Is the devnet (scripts/devnet-up.sh) and the web server running?`;
   }
   return e instanceof Error ? e.message : String(e);
 }
@@ -318,7 +320,11 @@ async function createRequest(amountText: string) {
   try {
     res = await fetch(`${POS_URL}/create?amount=${amount}&unit=${UNIT}`);
   } catch {
-    throw new Error(`Point of sale unreachable at ${POS_URL} (is crates/pos running? scripts/devnet-up.sh status).`);
+    throw new Error(
+      MAINNET
+        ? `Point of sale unreachable at ${POS_URL}. Try again later.`
+        : `Point of sale unreachable at ${POS_URL} (is crates/pos running? scripts/devnet-up.sh status).`,
+    );
   }
   const body = (await res.json()) as { id?: string; request?: string; error?: string };
   if (!res.ok || !body.id || !body.request) throw new Error(`Point of sale: ${body.error ?? res.status}`);

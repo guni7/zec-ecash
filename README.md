@@ -221,7 +221,7 @@ the defaults below differ; every code path is the same as on regtest, which stay
 | ports: mintd, processor gRPC, status, guardians, POS | 8085, 50051, 8095, 7101-3, 8090 | +1000: 9085, 51051, 9095, 8101-3, 9090 |
 | mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` (min deposit/withdrawal 10,000 zat: smaller notes are dust) |
 | guardian transport | plain HTTP on loopback (TLS/auth only if configured) | TLS (`scripts/guardian-ca.sh`) and HMAC-authenticated rounds (`guardian make-auth-key`), both required |
-| start | `scripts/devnet-up.sh` | `scripts/mainnet-up.sh` on each host (its `ZEC_ROLES`), each part under a watchdog |
+| start | `scripts/devnet-up.sh` | systemd units in `deploy/systemd/` (`zec-processor`, `zec-mintd`, `zec-guardian@N`; env from `deploy/mainnet.env.example` / `deploy/guardian.env.example`), or `scripts/mainnet-up.sh`; `scripts/server-check.sh` on every box |
 | web wallet | Vite dev server, port 5173 | MAINNET badge; disabled unless opened at `ZEC_MINT_URL`; built and served by Caddy (`deploy/Caddyfile.example`) |
 | keys | `scripts/devnet-reset.sh --new-keys` (runs `scripts/devnet-dkg.sh`) | distributed ceremony, one guardian per machine (`docs/deploy-mainnet.md`) |
 

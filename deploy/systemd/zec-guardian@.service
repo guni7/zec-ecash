@@ -1,0 +1,43 @@
+# MAINNET guardian N (instance = guardian id): zec-guardian@1, @2, @3.
+# The same file on the main host and on a bare guardian box: both keep the guardian's state in
+# /home/gunit/mainnet/ (key share, frost-pubkeys.json, mint.ufvk, auth secret, TLS cert/key,
+# .env) and run /usr/local/bin/guardian. On the main host that is NOT the repo's mainnet/ (which
+# holds the processor's and mint's state): the guardian never sees the mint's mnemonic or the
+# other guardians' auth secrets.
+# Install (main host): sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Install (bare box):  sudo cp zec-guardian@.service /etc/systemd/system/ && sudo systemctl daemon-reload
+# Then:                sudo systemctl enable --now zec-guardian@2
+# Logs: /home/gunit/mainnet/logs/guardian-N.log (+ .1..5), capped by the devlog crate.
+[Unit]
+Description=zec-ecash guardian %i (MAINNET, real ZEC)
+After=network-online.target
+Wants=network-online.target
+# Not before the DKG and the transport setup: every file this guardian needs.
+ConditionPathExists=/home/gunit/mainnet/.env
+ConditionPathExists=/home/gunit/mainnet/keys/guardian-%i.key
+ConditionPathExists=/home/gunit/mainnet/keys/frost-pubkeys.json
+ConditionPathExists=/home/gunit/mainnet/keys/mint.ufvk
+ConditionPathExists=/home/gunit/mainnet/keys/guardian-%i.auth
+ConditionPathExists=/home/gunit/mainnet/keys/guardian-%i-tls.crt
+ConditionPathExists=/home/gunit/mainnet/keys/guardian-%i-tls.key
+ConditionPathExists=/usr/local/bin/guardian
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gunit
+Group=gunit
+# The guardian's state dir is ./mainnet relative to this.
+WorkingDirectory=/home/gunit
+Environment=ZEC_NETWORK=mainnet
+# ZEC_GUARDIAN_LISTEN (and optionally ZEC_MINT_CA, RUST_LOG); ZEC_MINT_URL is read from the file.
+EnvironmentFile=/home/gunit/mainnet/.env
+ExecStart=/usr/local/bin/guardian --id %i --listen ${ZEC_GUARDIAN_LISTEN} serve
+Restart=always
+RestartSec=5
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

@@ -95,7 +95,8 @@ fn parse_args() -> Result<Args> {
                 args.mint = it.next().context("--mint URL")?;
                 mint_given = true;
             }
-            "--listen" => args.listen = Some(it.next().context("--listen HOST:PORT")?),
+            // Empty means the default (systemd passes `--listen ""` if ZEC_GUARDIAN_LISTEN is unset).
+            "--listen" => args.listen = Some(it.next().context("--listen HOST:PORT")?).filter(|l| !l.is_empty()),
             _ => args.cmd.push(a),
         }
     }
@@ -244,6 +245,7 @@ async fn serve(args: Args) -> Result<()> {
     let mint_ca = std::env::var("ZEC_MINT_CA").ok().filter(|v| !v.is_empty()).or_else(|| {
         network.is_mainnet().then(|| dotenv_value(&network.state_dir().join(".env"), "ZEC_MINT_CA")).flatten()
     });
+    let mint_ca = mint_ca.filter(|v| !v.is_empty()); // `ZEC_MINT_CA=` means none
     let mint_client = zec_frost::wire::Client::with_ca(mint_ca.as_deref().map(Path::new))?;
     let g = Arc::new(Guardian {
         id: args.id,

@@ -11,7 +11,7 @@
 // ZEC_POS_UPSTREAM; ZEC_WEB_PORT sets this server's port, ZEC_WEB_CERT / ZEC_WEB_KEY its TLS files. For a production build (`vite build`,
 // served by Caddy, see deploy/Caddyfile.example) the same network and mint URL are compiled in.
 import { readFileSync } from 'node:fs';
-import { defineConfig } from 'vite';
+import { defineConfig, type Plugin } from 'vite';
 
 const NETWORK = process.env.ZEC_NETWORK ?? 'regtest';
 if (NETWORK !== 'regtest' && NETWORK !== 'mainnet') {
@@ -48,7 +48,24 @@ function mintHost(): string | undefined {
   }
 }
 
+/** MAINNET: no devnet wording in the HTML itself (the script also sets it, but the static page
+ * must be right even before or without it). */
+const mainnetHtml: Plugin = {
+  name: 'zec-mainnet-html',
+  transformIndexHtml(html) {
+    if (!MAINNET) return html;
+    return html
+      .replace(/<title>(.*?)<\/title>/, '<title>MAINNET · $1</title>')
+      .replace(/<div id="network-badge" class="network-badge" role="alert" hidden>/, '<div id="network-badge" class="network-badge" role="alert">')
+      .replace(
+        /(<div id="banner" class="banner" role="alert">)[\s\S]*?(<\/div>)/,
+        '$1\n      MAINNET: real ZEC. Experimental mint; keep only small amounts here. Ecash lives only in this\n      browser: clearing site data loses it.\n    $2',
+      );
+  },
+};
+
 export default defineConfig(({ command }) => ({
+  plugins: [mainnetHtml],
   // Compiled into the page: which network, and the mint URL it must be opened at.
   define: {
     __ZEC_NETWORK__: JSON.stringify(NETWORK),

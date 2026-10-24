@@ -3,252 +3,343 @@
 **Real ZEC.** This is an experimental mint: run it with small amounts, behind the reserve cap,
 and do the first deposit and withdrawal yourself before telling anyone about it.
 
-Commands below run from the repository root on each machine, as the unprivileged user that owns
-the checkout. `G` is `./target/release/guardian`, `P` is `./target/release/zec-processor`.
-Every mainnet command needs `ZEC_NETWORK=mainnet` (scripts/mainnet-up.sh sets it itself).
+This guide is written for this deployment:
 
-## 1. Machines and what runs where
+| Machine | What | Runs | State |
+|---|---|---|---|
+| **main host** | Vultr, Ubuntu 24.04, user `gunit`, `zecmint.duckdns.org` | Caddy, cdk-mintd, zec-processor, **guardian 1** | repo `~/zec-ecash`; mint/processor state `~/zec-ecash/mainnet/`; guardian 1 state `~/mainnet/` |
+| **guardian 2** | Vultr, Ubuntu 24.04, user `gunit`, no repo | **guardian 2** | binary `/usr/local/bin/guardian`; state `~/mainnet/` |
+| **guardian 3** | your Mac | **guardian 3** | `~/mainnet/` (see section 9 for reaching it) |
 
-| Machine | Runs | Holds |
-|---|---|---|
-| **mint host** (public) | Caddy, cdk-mintd, zec-processor (`ZEC_ROLES=processor,mint`) | `mint.ufvk` (view key: sees, can't spend), `frost-pubkeys.json`, the three `guardian-N.auth` secrets, `guardian-ca.crt`, the mint's ecash mnemonic |
-| **guardian 1, 2, 3** (one VPS each, different providers if you can) | `guardian` (`ZEC_ROLES=guardian:N`) | its own `guardian-N.key` (spend share), its TLS key, its auth secret, `mint.ufvk`, `frost-pubkeys.json` |
+Every guardian keeps its state in `~/mainnet/` (key share, `frost-pubkeys.json`, `mint.ufvk`, its
+auth secret, its TLS certificate and key, `.env`) and runs `/usr/local/bin/guardian`, so one
+systemd template (`deploy/systemd/zec-guardian@.service`) serves both Linux boxes. On the main
+host, guardian 1's `~/mainnet/` is deliberately **not** the repo's `mainnet/`: the guardian never
+sees the mint's mnemonic or the other guardians' auth secrets.
 
-Any two guardian key shares can spend the reserve, so no machine ever holds two of them, and the
-mint host holds none. A compromised mint host can ask the guardians to sign, but each guardian
-re-checks every withdrawal against the mint's public quote (checks a-h) before signing.
+Any two key shares can spend the reserve, so no machine ever holds two. The main host holds one
+(guardian 1) plus all three auth secrets: if it is compromised the attacker can ask guardians 2 and
+3 to sign, but each guardian re-checks every withdrawal against the mint's public quote (checks
+a-h) before it does.
 
-## 2. Base setup (every machine)
+All `guardian` commands run from your home directory (`cd ~`), so `mainnet/` means `~/mainnet/`.
+All `zec-processor` commands run from `~/zec-ecash`. Every mainnet command needs
+`ZEC_NETWORK=mainnet` (the systemd units set it themselves).
 
-Debian 12 or Ubuntu 24.04, 2 vCPU / 4 GB RAM (the Orchard proving key needs ~1 GB), 20 GB disk.
+## 1. Base setup
+
+### Both Vultr boxes
 
 ```sh
-sudo apt update && sudo apt install -y build-essential pkg-config git curl ufw chrony sqlite3 netcat-openbsd
-sudo systemctl enable --now chrony          # clocks must agree within 60 s (request auth window)
-sudo adduser --disabled-password zec && sudo -iu zec
+sudo apt update && sudo apt install -y ufw chrony curl netcat-openbsd openssl
+sudo systemctl enable --now chrony     # clocks must agree within 60 s (guardian request auth)
+```
+
+### Main host
+
+```sh
+sudo apt install -y build-essential pkg-config git sqlite3
 curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
-git clone https://github.com/guni7/zec-ecash.git && cd zec-ecash
-git checkout <the reviewed commit>          # the same commit on every machine
-cargo build --release -p guardian -p zec-processor
+git clone https://github.com/guni7/zec-ecash.git ~/zec-ecash && cd ~/zec-ecash
+git checkout <the reviewed commit>
+cargo build --release -p zec-processor -p guardian -p zec-ecash-cli
+cargo install cdk-mintd --version 0.18.2 --locked          # -> ~/.cargo/bin/cdk-mintd
+sudo install -m 755 target/release/guardian /usr/local/bin/guardian    # guardian 1
+mkdir -m 700 -p ~/zec-ecash/mainnet/keys ~/mainnet/keys
 ```
 
-Mint host only:
+Caddy is already running with `deploy/Caddyfile.example` (domain `zecmint.duckdns.org`) and the
+web wallet in `/srv/zec-ecash/web` (section 6).
+
+### Guardian 2 (bare box)
+
+Both boxes run Ubuntu 24.04, so the main host's build runs there unchanged. From the main host:
 
 ```sh
-cargo install cdk-mintd --version 0.18.2 --locked
-sudo apt install -y caddy                    # https://caddyserver.com/docs/install#debian-ubuntu-raspbian
+scp ~/zec-ecash/target/release/guardian ~/zec-ecash/deploy/systemd/zec-guardian@.service \
+    ~/zec-ecash/deploy/guardian.env.example ~/zec-ecash/scripts/server-check.sh gunit@<GUARDIAN2_IP>:/tmp/
 ```
 
-The web wallet is built on any machine with Node 20 (section 7).
+On guardian 2:
 
-## 3. Ports and firewall
+```sh
+sudo install -m 755 /tmp/guardian /usr/local/bin/guardian
+mkdir -m 700 -p ~/mainnet/keys
+install -m 600 /tmp/guardian.env.example ~/mainnet/.env      # edit: section 5
+install -m 755 /tmp/server-check.sh ~/server-check.sh
+```
 
-Only 443 (and 80, for Caddy's certificate) is public. Everything else is loopback, except each
-guardian's port, which only the mint host's IP may reach.
+### Guardian 3 (Mac)
+
+Build from a checkout (`cargo build --release -p guardian`), then
+`sudo install -m 755 target/release/guardian /usr/local/bin/guardian` and
+`mkdir -m 700 -p ~/mainnet/keys`.
+
+## 2. Ports and firewall
+
+Only 443 (and 80, for Caddy's certificate) is public. Everything else on the main host is
+loopback. Guardian 2's port accepts the main host's IP only.
 
 | Machine | Port | Who may connect |
 |---|---|---|
-| mint host | 443/tcp, 80/tcp | everyone (Caddy) |
-| mint host | 9085 cdk-mintd, 51051 processor gRPC, 9095 status, 9090 POS | loopback only (Caddy proxies 9085, 9095, 9090) |
-| guardian N | 810N/tcp (TLS) | the mint host's IP only |
-| all | 22/tcp | your admin IPs only |
+| main host | 443/tcp, 80/tcp | everyone (Caddy) |
+| main host | 9085 cdk-mintd, 51051 processor gRPC, 9095 status, 8101 guardian 1 | loopback only |
+| guardian 2 | 8102/tcp (TLS) | the main host's IP only |
+| guardian 3 | 8103/tcp (TLS) | the main host only (section 9) |
+| both Vultr boxes | 22/tcp | your admin IPs only |
 
-Outbound: the mint host reaches the light-wallet server (`ZEC_LWD_URL`, 443) and the guardians
-(810N); each guardian reaches the mint's public URL (443) for its quote checks.
+Main host:
 
 ```sh
-# every machine
 sudo ufw default deny incoming && sudo ufw default allow outgoing
 sudo ufw allow from <ADMIN_IP> to any port 22 proto tcp
-# mint host
 sudo ufw allow 80/tcp && sudo ufw allow 443/tcp
-# guardian N (N = 1, 2, 3)
-sudo ufw allow from <MINT_HOST_IP> to any port 810N proto tcp
 sudo ufw enable && sudo ufw status verbose
 ```
 
-## 4. DKG ceremony (three machines)
+Guardian 2 (its port from the main host's IP only):
+
+```sh
+sudo ufw default deny incoming && sudo ufw default allow outgoing
+sudo ufw allow from <ADMIN_IP> to any port 22 proto tcp
+sudo ufw allow from <MAIN_HOST_IP> to any port 8102 proto tcp
+sudo ufw enable && sudo ufw status verbose
+```
+
+Also add the same rules in Vultr's own firewall group if you use one (it filters before ufw).
+Outbound: the main host reaches the light-wallet server (443) and the guardians; each guardian
+reaches `https://zecmint.duckdns.org/mint` (443) for its quote checks.
+
+## 3. DKG ceremony (three machines)
 
 Produces the reserve's spend key as three shares, without the key ever existing in one place.
 `guardian dkg` advances one step each time it is run, as far as the files in its inbox allow.
-Use `scp` between machines (or via your laptop over SSH); never email or chat these files.
+Move files with `scp` (directly, or through your laptop over SSH); never email or chat them.
 
 | File | Secret? | Goes to |
 |---|---|---|
-| `mainnet/dkg/outbox/round1-from-N.json` | no | both other guardians |
-| `mainnet/dkg/outbox/round2-from-N-to-M.json` | **yes: guardian M's share** | guardian M only, then delete every copy |
-| `mainnet/keys/frost-pubkeys.json` | no | the mint host |
-| `mainnet/keys/mint.ufvk` | no (view key) | every guardian |
-| `mainnet/dkg/outbox/verify-N.json` | no | both other guardians |
+| `~/mainnet/dkg/outbox/round1-from-N.json` | no | both other guardians |
+| `~/mainnet/dkg/outbox/round2-from-N-to-M.json` | **yes: guardian M's share** | guardian M only, then delete every copy |
+| `~/mainnet/keys/frost-pubkeys.json` | no | the main host's `~/zec-ecash/mainnet/keys/` |
+| `~/zec-ecash/mainnet/keys/mint.ufvk` | no (view key) | every guardian's `~/mainnet/keys/` |
+| `~/mainnet/dkg/outbox/verify-N.json` | no | both other guardians |
 
-1. **Round 1**, on each guardian N:
+1. **Round 1**, on each guardian N (1 on the main host, 2, 3):
    ```sh
-   ZEC_NETWORK=mainnet G --id N dkg --threshold 2 --participants 3
+   cd ~ && ZEC_NETWORK=mainnet guardian --id N dkg --threshold 2 --participants 3
    ```
-2. Copy `mainnet/dkg/outbox/round1-from-N.json` from each guardian into the other two guardians'
-   `mainnet/dkg/inbox/`, e.g. from your laptop:
+2. Copy each `~/mainnet/dkg/outbox/round1-from-N.json` into the other two guardians'
+   `~/mainnet/dkg/inbox/`.
+3. **Round 2**, on each guardian: run the same command again. It writes `round2-from-N-to-M.json`
+   for each other guardian M (mode 600).
+4. Copy each `round2-from-N-to-M.json` **only** to guardian M's `~/mainnet/dkg/inbox/`, then
+   delete every other copy, e.g. from the main host (guardian 1) to guardian 2:
    ```sh
-   scp g1:zec-ecash/mainnet/dkg/outbox/round1-from-1.json /tmp/ && \
-     scp /tmp/round1-from-1.json g2:zec-ecash/mainnet/dkg/inbox/ && \
-     scp /tmp/round1-from-1.json g3:zec-ecash/mainnet/dkg/inbox/
+   scp ~/mainnet/dkg/outbox/round2-from-1-to-2.json gunit@<GUARDIAN2_IP>:mainnet/dkg/inbox/ && \
+     shred -u ~/mainnet/dkg/outbox/round2-from-1-to-2.json
    ```
-   (and the same for 2 and 3).
-3. **Round 2**, on each guardian: run the same `dkg` command again. It writes
-   `round2-from-N-to-M.json` for each other guardian M (mode 600).
-4. Copy each `round2-from-N-to-M.json` **only** to guardian M's `mainnet/dkg/inbox/`, then delete
-   the copy on your laptop and the original in guardian N's outbox:
+   Six files: 1->2, 1->3, 2->1, 2->3, 3->1, 3->2. A guardian refuses to continue if its inbox
+   holds a round-2 file addressed to someone else.
+5. **Key shares**, on each guardian: run the command once more. It writes
+   `~/mainnet/keys/guardian-N.key` (mode 600) and `~/mainnet/keys/frost-pubkeys.json`, and prints
+   the group key. The three printed group keys must be identical.
+6. On the main host, give the processor the public key package and make the view key (once):
    ```sh
-   scp g1:zec-ecash/mainnet/dkg/outbox/round2-from-1-to-2.json /tmp/ && \
-     scp /tmp/round2-from-1-to-2.json g2:zec-ecash/mainnet/dkg/inbox/ && \
-     shred -u /tmp/round2-from-1-to-2.json && \
-     ssh g1 shred -u zec-ecash/mainnet/dkg/outbox/round2-from-1-to-2.json
+   cp ~/mainnet/keys/frost-pubkeys.json ~/zec-ecash/mainnet/keys/
+   cd ~/zec-ecash && ZEC_NETWORK=mainnet ./target/release/zec-processor make-ufvk
+   cp ~/zec-ecash/mainnet/keys/mint.ufvk ~/mainnet/keys/                  # guardian 1
+   scp ~/zec-ecash/mainnet/keys/mint.ufvk gunit@<GUARDIAN2_IP>:mainnet/keys/   # guardian 2
    ```
-   Six files in total: 1->2, 1->3, 2->1, 2->3, 3->1, 3->2. A guardian refuses to continue if its
-   inbox holds a round-2 file addressed to someone else.
-5. **Key shares**, on each guardian: run `dkg` once more. It writes `mainnet/keys/guardian-N.key`
-   (mode 600) and `mainnet/keys/frost-pubkeys.json`, and prints the group key. The three printed
-   group keys must be identical.
-6. Copy `mainnet/keys/frost-pubkeys.json` from guardian 1 to the mint host's `mainnet/keys/`, and
-   make the view key there (once):
-   ```sh
-   ZEC_NETWORK=mainnet P make-ufvk          # writes mainnet/keys/mint.ufvk
-   ```
-7. Copy the mint host's `mainnet/keys/mint.ufvk` to every guardian's `mainnet/keys/`.
-8. **Verify**, on each guardian:
-   ```sh
-   ZEC_NETWORK=mainnet G --id N verify
-   ```
-   Copy each `mainnet/dkg/outbox/verify-N.json` into the other guardians' `mainnet/dkg/inbox/`,
-   then run `verify` again on each. Each must print
-   `all 3 guardians agree on the group key and the UFVK`. Also read the printed group key and mint
-   address aloud between the operators (out of band): all three must match.
-9. **Back up** each `guardian-N.key` separately (encrypted, offline, different places). Losing
-   two of them loses the reserve; leaking two of them loses it too.
+   and copy `mint.ufvk` to guardian 3's `~/mainnet/keys/` too.
+7. **Verify**, on each guardian: `cd ~ && ZEC_NETWORK=mainnet guardian --id N verify`. Copy each
+   `~/mainnet/dkg/outbox/verify-N.json` into the other guardians' `~/mainnet/dkg/inbox/`, then run
+   `verify` again on each. Each must print `all 3 guardians agree on the group key and the UFVK`.
+   Also compare the printed group key and mint address between machines by eye.
+8. **Back up** each `guardian-N.key` separately (encrypted, offline, different places). Losing two
+   loses the reserve; leaking two loses it too.
 
-## 5. Guardian transport (TLS + request authentication)
+## 4. Guardian transport (TLS + request authentication)
 
-On the mint host, a private CA for the guardians' certificates. `<host-or-ip>` must be exactly
-what `ZEC_GUARDIANS` will use for that guardian:
+On the main host, a private CA for the guardians' certificates. The second argument after the
+guardian id must be exactly the host in that guardian's `ZEC_GUARDIANS` URL:
 
 ```sh
+cd ~/zec-ecash
 scripts/guardian-ca.sh init mainnet/ca
-scripts/guardian-ca.sh issue mainnet/ca 1 g1.example.net      # or an IP address
-scripts/guardian-ca.sh issue mainnet/ca 2 g2.example.net
-scripts/guardian-ca.sh issue mainnet/ca 3 g3.example.net
+scripts/guardian-ca.sh issue mainnet/ca 1 127.0.0.1            # guardian 1 is local
+scripts/guardian-ca.sh issue mainnet/ca 2 <GUARDIAN2_IP>
+scripts/guardian-ca.sh issue mainnet/ca 3 <GUARDIAN3_ADDRESS>  # see section 9
 cp mainnet/ca/guardian-ca.crt mainnet/keys/
+cp mainnet/ca/guardian-1-tls.crt mainnet/ca/guardian-1-tls.key ~/mainnet/keys/
+scp mainnet/ca/guardian-2-tls.crt mainnet/ca/guardian-2-tls.key gunit@<GUARDIAN2_IP>:mainnet/keys/
 ```
 
-Copy `guardian-N-tls.crt` and `guardian-N-tls.key` to guardian N's `mainnet/keys/`, then move
-`mainnet/ca/guardian-ca.key` off the server (offline backup); it is needed only to issue
-certificates again.
+(and guardian 3's pair to the Mac). Then move `mainnet/ca/guardian-ca.key` off the server to an
+offline backup; it is needed only to issue certificates again.
 
-On each guardian, its request-auth secret, and give the mint host (only) a copy:
+On each guardian, its request-auth secret; the main host (only) gets a copy:
 
 ```sh
-ZEC_NETWORK=mainnet G --id N make-auth-key     # mainnet/keys/guardian-N.auth (mode 600)
-scp gN:zec-ecash/mainnet/keys/guardian-N.auth mint:zec-ecash/mainnet/keys/
+cd ~ && ZEC_NETWORK=mainnet guardian --id N make-auth-key      # ~/mainnet/keys/guardian-N.auth
 ```
 
-Every `/round1` and `/round2` request then carries an HMAC-SHA256 over method, path, timestamp and
-body. A guardian refuses requests without a valid one, with a timestamp more than 60 s off, or
-seen before, before it generates any nonce. A mainnet guardian won't start without its TLS files
-and auth secret; a mainnet processor won't start without https:// guardian URLs and all three
-secrets.
-
-## 6. Configuration
-
-`mainnet/.env` on the **mint host** (mode 600; never the devnet's `.env`):
-
 ```sh
-ZEC_ROLES=processor,mint
-ZEC_MINT_URL=https://mint.example.com/mint
-ZEC_GUARDIANS=https://g1.example.net:8101,https://g2.example.net:8102,https://g3.example.net:8103
-ZEC_LWD_URL=https://zec.rocks:443           # or your own lightwalletd / Zebra (recommended)
-ZEC_MIN_ZATS=10000                          # = min_mint / min_melt in mintd/config.mainnet.toml
-ZEC_MAX_ZATS=1000000                        # = max_mint / max_melt
-ZEC_MAX_RESERVE=1000000                     # the whole reserve's cap, zats
-CDK_MINTD_MNEMONIC=<24 words>               # the mainnet mint's own ecash key
+# on the main host
+cp ~/mainnet/keys/guardian-1.auth ~/zec-ecash/mainnet/keys/
+scp gunit@<GUARDIAN2_IP>:mainnet/keys/guardian-2.auth ~/zec-ecash/mainnet/keys/
+chmod 600 ~/zec-ecash/mainnet/keys/guardian-*.auth
 ```
 
-Generate `CDK_MINTD_MNEMONIC` as a fresh 24-word BIP-39 mnemonic on an offline machine, never
-reuse the devnet's, and back it up: it signs all the mint's ecash.
+(and `guardian-3.auth` from the Mac). Every `/round1` and `/round2` request then carries an
+HMAC-SHA256 over method, path, timestamp and body; a guardian refuses one without a valid HMAC,
+more than 60 s off, or seen before, before it makes any nonce. A mainnet guardian won't start
+without its TLS files and auth secret; the processor won't start without `https://` guardian URLs
+and all three secrets.
 
-`mintd/config.mainnet.toml`: set `[info] url = "https://mint.example.com/mint/"`.
+## 5. Configuration
 
-`mainnet/.env` on **guardian N**:
+**Main host**, `~/zec-ecash/mainnet/.env` from `deploy/mainnet.env.example` (every variable is
+explained there):
 
 ```sh
-ZEC_ROLES=guardian:N
-ZEC_MINT_URL=https://mint.example.com/mint  # quotes are checked here, over public HTTPS
-ZEC_GUARDIAN_LISTEN=0.0.0.0:810N            # reachable from the mint host (firewall: only it)
+cd ~/zec-ecash && install -m 600 deploy/mainnet.env.example mainnet/.env && nano mainnet/.env
 ```
 
-## 7. Web wallet
+Set at least `ZEC_MINT_URL=https://zecmint.duckdns.org/mint`, `CDK_MINTD_MNEMONIC` (24 BIP-39 words
+generated offline for this mint only, quoted), and
+`ZEC_GUARDIANS=https://127.0.0.1:8101,https://<GUARDIAN2_IP>:8102,https://<GUARDIAN3_ADDRESS>:8103`.
+In `mintd/config.mainnet.toml` set `[info] url = "https://zecmint.duckdns.org/mint/"`.
 
-On a machine with Node 20, from a checkout with the mint host's `mainnet/.env` values:
+**Each guardian**, `~/mainnet/.env` from `deploy/guardian.env.example`:
+
+| | `ZEC_MINT_URL` | `ZEC_GUARDIAN_LISTEN` |
+|---|---|---|
+| guardian 1 (main host) | `https://zecmint.duckdns.org/mint` | `127.0.0.1:8101` |
+| guardian 2 | `https://zecmint.duckdns.org/mint` | `0.0.0.0:8102` |
+| guardian 3 (Mac) | `https://zecmint.duckdns.org/mint` | see section 9 |
+
+On the main host: `install -m 600 ~/zec-ecash/deploy/guardian.env.example ~/mainnet/.env`.
+
+## 6. Web wallet
+
+On the main host (or any machine with Node 20 and the main host's `mainnet/.env`):
 
 ```sh
-cd web && npm ci
+cd ~/zec-ecash/web && npm ci
 ZEC_NETWORK=mainnet ZEC_ENV_FILE=../mainnet/.env npx vite build --outDir dist-mainnet
-rsync -a --delete dist-mainnet/ mint:/srv/zec-ecash/web/
+sudo rsync -a --delete dist-mainnet/ /srv/zec-ecash/web/
 ```
 
-The page is compiled for mainnet: it shows a MAINNET badge, and it disables itself unless opened at
-exactly `ZEC_MINT_URL`'s origin (tokens carry the mint URL).
+The page is compiled for mainnet: MAINNET badge and banner, and it disables itself unless it is
+opened at exactly `https://zecmint.duckdns.org` (tokens carry the mint URL).
 
-Caddy: copy `deploy/Caddyfile.example` to `/etc/caddy/Caddyfile`, replace `mint.example.com`, and
-`sudo systemctl reload caddy`.
+## 7. Install and start the services (systemd)
 
-## 8. Start
+The units refuse to start until their key and config files exist (`ConditionPathExists`), so
+installing them before the DKG is safe: they stay inactive until everything is in place. They run
+as `gunit`, restart on any exit (`Restart=always`, every 5 s), and log through the devlog caps
+(`processor.log`, `guardian-N.log`: 10 MB x 6 files each).
 
-Guardians first, then the mint host:
+### Main host
+
+Initialise the mint's work dir once (it reads the mnemonic from `mainnet/.env`):
 
 ```sh
-scripts/mainnet-up.sh            # starts this host's ZEC_ROLES, each under a watchdog
-scripts/mainnet-up.sh status
-scripts/mainnet-up.sh stop
+cd ~/zec-ecash && mkdir -p mainnet/mint
+( set -a; . mainnet/.env; set +a; ~/.cargo/bin/cdk-mintd -w mainnet/mint config init --new-mint --file mintd/config.mainnet.toml )
 ```
 
-The watchdog restarts a part that exits (2 s, doubling to 60 s); `mainnet/logs/watchdog.log`
-records every start, exit and restart. To start at boot, a systemd unit per machine:
+Then install all three units and start them (guardian 1, the processor, then the mint):
 
-```ini
-# /etc/systemd/system/zec-ecash.service
-[Unit]
-Description=zec-ecash (MAINNET)
-After=network-online.target
-Wants=network-online.target
-
-[Service]
-# The script starts each part under a background watchdog and exits; the watchdogs stay in this
-# unit's cgroup, so `systemctl stop` (and ExecStop) ends them.
-Type=oneshot
-User=zec
-WorkingDirectory=/home/zec/zec-ecash
-ExecStart=/home/zec/zec-ecash/scripts/mainnet-up.sh start
-ExecStop=/home/zec/zec-ecash/scripts/mainnet-up.sh stop
-RemainAfterExit=yes
-
-[Install]
-WantedBy=multi-user.target
+```sh
+sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+sudo systemctl enable --now zec-guardian@1
+sudo systemctl enable --now zec-processor
+sudo systemctl enable --now zec-mintd
 ```
 
-## 9. Before the first transaction
+cdk-mintd also writes daily files to `mainnet/mint/logs/`; bound them (and anything else in
+`mainnet/logs/`) with a cron job (`crontab -e`):
 
-- `scripts/mainnet-up.sh status` on every machine: all parts up.
-- On the mint host, `mainnet/logs/processor.log` shows `guardian up` for all three, with the same
+```
+*/10 * * * * cd /home/gunit/zec-ecash && LOG_STATE=mainnet scripts/log-trim.sh >/dev/null 2>&1
+```
+
+### Guardian 2
+
+```sh
+sudo cp /tmp/zec-guardian@.service /etc/systemd/system/ && sudo systemctl daemon-reload
+sudo systemctl enable --now zec-guardian@2
+```
+
+### Guardian 3 (Mac)
+
+No systemd on macOS: run it in a terminal (or a launchd agent) from your home directory:
+
+```sh
+cd ~ && ZEC_NETWORK=mainnet guardian --id 3 --listen 127.0.0.1:8103 serve
+```
+
+### Checking
+
+```sh
+systemctl status zec-processor zec-mintd zec-guardian@1     # main host
+journalctl -u zec-processor -f                              # startup and errors
+tail -f ~/zec-ecash/mainnet/logs/processor.log ~/mainnet/logs/guardian-1.log
+~/zec-ecash/scripts/server-check.sh                         # main host
+~/server-check.sh                                           # guardian 2
+```
+
+`scripts/server-check.sh` prints the units' status and restart counts, guardian certificate expiry
+and free disk on every box; on the main host also the public certificate's expiry, `/reserves`,
+and whether each guardian answers over TLS with the same group key. It exits 1 when something
+needs attention, so it can run from cron and mail you.
+
+A unit that stays `inactive` with `ConditionResult=no` is waiting for a file
+(`systemctl show -p ConditionResult zec-guardian@2`; the unit file lists which).
+
+`scripts/mainnet-up.sh` still works as an alternative to systemd on a host with the repo (roles in
+`ZEC_ROLES`, guardian state in the repo's `mainnet/`); don't run both.
+
+## 8. Before the first transaction
+
+- `server-check.sh` reports "all good" on the main host and guardian 2.
+- `journalctl -u zec-processor` / `processor.log` shows `guardian up` for all three with the same
   group key, and the reserve wallet's birthday near the current tip.
-- `curl https://mint.example.com/reserves`: `"state":"ok"`.
+- `curl https://zecmint.duckdns.org/reserves`: `"state":"ok"`.
 - Each guardian's `verify` reported that all three agree; key shares backed up.
-- Firewall: from another machine, the guardians' ports and 9085/9095/51051 are closed.
-- Then one small deposit and one small withdrawal, watched end to end.
+- From another machine: guardian 2's 8102 is closed (only the main host gets in), and the main
+  host's 9085, 9095, 51051 and 8101 are closed.
+- Then one small deposit (10,000 zat or more) and one small withdrawal, watched end to end.
+
+## 9. Guardian 3 on a Mac
+
+The processor must reach guardian 3 over TLS, but a Mac at home is usually behind NAT and moves
+between networks. Two workable setups:
+
+- **SSH reverse tunnel** (simplest): the Mac keeps a tunnel open to the main host, so guardian 3
+  appears on the main host's loopback. Issue guardian 3's certificate for `127.0.0.1`, set
+  `ZEC_GUARDIANS=...,https://127.0.0.1:8103`, run guardian 3 with `--listen 127.0.0.1:8103`, and:
+  ```sh
+  ssh -N -o ServerAliveInterval=30 -o ExitOnForwardFailure=yes -R 127.0.0.1:8103:127.0.0.1:8103 gunit@<MAIN_HOST_IP>
+  ```
+  (`autossh` keeps it up.) Nothing on the Mac is exposed to the internet.
+- **A private network** (WireGuard or Tailscale) between the Mac and the main host: issue the
+  certificate for the Mac's private address and listen on it.
+
+Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two guardians (1 and
+2), so that is fine, but while guardian 2 is down too, withdrawals stop until one comes back.
 
 ## 10. Running it
 
-- `/reserves` (HTTP 200 ok, 503 otherwise) is the thing to monitor; `zec-ecash-cli reserves`
-  prints it. `RESERVE INVARIANT VIOLATED` and `CRITICAL` lines in `processor.log` need a person.
+- `/reserves` (HTTP 200 ok, 503 otherwise) is the thing to monitor; `server-check.sh` and
+  `zec-ecash-cli reserves` print it. `RESERVE INVARIANT VIOLATED` and `CRITICAL` lines in
+  `processor.log` need a person.
 - A withdrawal flagged `operator_action_required` (reported PAID, then reorged out and expired):
-  pay the recipient by other means, then `ZEC_NETWORK=mainnet P resolve <quote_id>`.
+  pay the recipient by other means, then
+  `cd ~/zec-ecash && ZEC_NETWORK=mainnet ./target/release/zec-processor resolve <quote_id>`.
+- Updating: rebuild on the main host, `sudo install` the new guardian binary on each guardian box,
+  `sudo systemctl restart zec-guardian@N zec-processor zec-mintd`.
 - Rotating a guardian's auth secret: `make-auth-key` refuses to overwrite, so move the old
   `guardian-N.auth` aside on both machines, make a new one, copy it, restart both.
 - Rotating TLS: `scripts/guardian-ca.sh issue` again with the CA key, copy, restart the guardian.

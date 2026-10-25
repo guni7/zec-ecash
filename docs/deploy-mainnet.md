@@ -41,7 +41,7 @@ sudo systemctl enable --now chrony     # clocks must agree within 60 s (guardian
 sudo apt install -y build-essential pkg-config git sqlite3
 curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
 git clone https://github.com/guni7/zec-ecash.git ~/zec-ecash && cd ~/zec-ecash
-git checkout <the reviewed commit>
+git checkout <the reviewed commit>          # deploy-only checkout: never commit here (section 11)
 cargo build --release -p zec-processor -p guardian -p zec-ecash-cli
 cargo install cdk-mintd --version 0.18.2 --locked          # -> ~/.cargo/bin/cdk-mintd
 sudo install -m 755 target/release/guardian /usr/local/bin/guardian    # guardian 1
@@ -343,3 +343,22 @@ Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two g
 - Rotating a guardian's auth secret: `make-auth-key` refuses to overwrite, so move the old
   `guardian-N.auth` aside on both machines, make a new one, copy it, restart both.
 - Rotating TLS: `scripts/guardian-ca.sh issue` again with the CA key, copy, restart the guardian.
+
+## 11. Never commit
+
+`.gitignore` covers all of these; never force-add one (`git add -f`):
+
+- **Secrets:** every `.env` anywhere (`.env`, `mainnet/.env`, `*.env`; only the commented
+  `*.env.example` templates are tracked), `devnet/keys/`, `*.key`, `*.auth`, `*.seed`, `*.gpg`,
+  `*-key.pem` (incl. `rootCA-key.pem`), `guardian-ca.key`, `web/certs/`, and every `dkg/`
+  directory (round-1/round-2/verify files and DKG state).
+- **The whole `mainnet/` directory:** keys, `ca/`, `mint/`, databases, logs, `dkg/`, `judge-kit/`.
+- **State and logs:** `*.sqlite`, `*.sqlite-*`, `*.db`, `*.redb`, the devnet chain and mint work
+  dirs under `devnet/`, `*.log`, `*.log.*`, `logs/`.
+- **Build output:** `target/`, `node_modules/`, `web/dist/`, `web/dist-mainnet/`.
+- **OS/editor:** `.DS_Store`, `*.swp`, `.idea/`, `.vscode/`.
+
+**The server checkout is deploy-only.** On the main host, `~/zec-ecash` only ever does
+`git fetch` and `git checkout <reviewed commit>`: never `git add`, `git commit` or `git push`
+there. Make changes on your own machine, review them, push, then check the commit out on the
+server.

@@ -1,20 +1,25 @@
 // Hash router: #/send?t=abc. Static hosting, Caddy's try_files and the service worker only ever
 // see "/", so no server changes. In-app links push history entries (so the hardware back button
 // walks back through pages); overlays (the "more" sheet, the camera) push an entry on the same
-// URL, so back closes them instead of leaving the page.
+// URL, so back closes them instead of leaving the page. Old links (#/request?r=…, from before
+// Request became part of Receive) are redirected in place.
 
 export type Route = { path: string; params: URLSearchParams };
 
-export const PATHS = ['/', '/send', '/receive', '/deposit', '/withdraw', '/request', '/activity', '/status', '/settings'] as const;
+export const PATHS = ['/', '/send', '/scan', '/receive', '/activity', '/deposit', '/withdraw', '/status', '/settings', '/welcome'] as const;
 export type Path = (typeof PATHS)[number];
 
+/** Pages that moved: the old path still works, with its parameters. */
+export const REDIRECTS: Record<string, Path> = { '/request': '/receive' };
+
 /** '#/send?t=1' -> { path: '/send', params: t=1 }. Unknown paths go home. */
-export function parse(hash: string): Route & { path: Path } {
+export function parse(hash: string): Route & { path: Path; moved?: boolean } {
   const raw = hash.replace(/^#/, '') || '/';
   const q = raw.indexOf('?');
   let path = (q < 0 ? raw : raw.slice(0, q)).replace(/\/+$/, '') || '/';
   if (!path.startsWith('/')) path = `/${path}`;
   const params = new URLSearchParams(q < 0 ? '' : raw.slice(q + 1));
+  if (REDIRECTS[path]) return { path: REDIRECTS[path], params, moved: true };
   return { path: (PATHS as readonly string[]).includes(path) ? (path as Path) : '/', params };
 }
 
@@ -22,17 +27,26 @@ type State = { idx: number; overlay?: string };
 let render: (r: Route & { path: Path }) => void = () => {};
 let lastHash = '';
 const closers = new Map<string, () => void>();
+/** How the page now showing was reached: a tap or link ('push'), back/forward ('pop'), or a (re)load. */
+let how: 'push' | 'pop' | 'load' = 'load';
+export const navKind = () => how;
 
 const idx = () => (history.state as State | null)?.idx ?? 0;
 
 function renderNow() {
+  const r = parse(location.hash);
+  if (r.moved) {
+    const q = r.params.toString();
+    history.replaceState(history.state, '', `#${r.path}${q ? `?${q}` : ''}`);
+  }
   lastHash = location.hash;
-  render(parse(location.hash));
+  render(r);
 }
 
 /** Navigate to an in-app path ('/send?t=1'). `replace` doesn't add a history entry. */
 export function go(path: string, replace = false) {
   const url = `#${path}`;
+  how = 'push';
   if (url === location.hash && !replace) return renderNow();
   if (replace) history.replaceState({ idx: idx() } satisfies State, '', url);
   else history.pushState({ idx: idx() + 1 } satisfies State, '', url);
@@ -80,11 +94,14 @@ export function start(onRoute: typeof render) {
         close();
       }
     }
+    how = 'pop';
     if (location.hash !== lastHash) renderNow();
   });
   // Typed or external hash changes (no popstate in some browsers).
   window.addEventListener('hashchange', () => {
-    if (location.hash !== lastHash) renderNow();
+    if (location.hash === lastHash) return;
+    how = 'push';
+    renderNow();
   });
   // Same-origin links like <a href="#/send"> go through go(), so they get an idx.
   document.addEventListener('click', (e) => {

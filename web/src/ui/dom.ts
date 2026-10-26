@@ -117,5 +117,8 @@ export const ICON = {
   share: I('<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 12v8h14v-8"/>'),
   scan: I('<path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M4 12h16"/>'),
   close: I('<path d="m6 6 12 12M18 6 6 18"/>'),
+  check: '<svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="m14 25 7 7 13-15"/></svg>',
+  alert: '<svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="M24 13v14M24 33v3"/></svg>',
+  shield: I('<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>'),
   external: '<svg viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M14 4h6v6M20 4 10 14"/><path d="M18 14v6H4V6h6"/></svg>',
 };

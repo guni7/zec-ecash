@@ -1,12 +1,15 @@
+// Add money: a deposit (onchain.ts) in plain words.
 import { zip321, type Deposit } from '../../wallet/onchain';
 import { depositProgress, filledSegments, type DepositProgress } from '../../wallet/status';
-import { ago, busy, copyChip, copyText, countdown, fmtZat, fmtZec, h, plural, svg, ICON } from '../dom';
+import { ago, busy, copyChip, copyText, countdown, h, plural, svg, ICON } from '../dom';
+import { backupNudge } from '../flows';
 import { qrCard } from '../qr';
 import { go } from '../router';
-import { amountField, amountInput, emptyState, glitch, pageHead, segmentBar, waiting, type App, type Page } from '../widgets';
+import { amountEntry, details, kv, moneyEl, pageHead, resultView, segmentBar, waiting, type App, type Page } from '../widgets';
+import { moneyText } from '../words';
 
 export const deposit: Page = {
-  title: 'Deposit',
+  title: 'Add money',
   render(app, route) {
     const q = route.params.get('q');
     const d = q ? app.onchain.deposits().find((x) => x.quote === q) : undefined;
@@ -16,76 +19,78 @@ export const deposit: Page = {
 
 function limitText(app: App) {
   const l = app.onchain.limits().mint;
-  return l.min || l.max ? `Min ${fmtZat(l.min ?? 1)} · max ${l.max ? fmtZat(l.max) : '∞'} zat per deposit.` : '';
+  if (l.min && l.max) return `Between ${moneyText(l.min)} and ${moneyText(l.max)}.`;
+  if (l.max) return `Up to ${moneyText(l.max)}.`;
+  return l.min ? `At least ${moneyText(l.min)}.` : '';
 }
 
 function form(app: App) {
-  const amount = amountInput();
-  const submit = h('button', { type: 'submit', class: 'btn primary block' }, '[ GET ADDRESS ]');
+  const amount = amountEntry({ autofocus: true });
+  const submit = h('button', { type: 'submit', class: 'btn primary block big' }, 'Get address');
   const hint = h('p', { class: 'hint' }, limitText(app));
-  const list = h('div');
+  const open = h('div');
   const update = () => {
     hint.textContent = limitText(app);
-    const all = app.onchain.deposits();
-    const open = all.filter((d) => d.state === 'unpaid' || d.state === 'paid');
-    list.replaceChildren(
-      h(
-        'section',
-        { class: 'section' },
-        h('h3', { class: 'section-title' }, open.length ? `Open · ${open.length}` : 'Recent'),
-        all.length ? h('div', { class: 'list' }, (open.length ? open : all.slice(0, 5)).map(row)) : emptyState('No deposits yet.'),
-      ),
-    );
+    const list = app.onchain.deposits().filter((d) => d.state === 'unpaid' || d.state === 'paid');
+    open.replaceChildren(list.length ? h('section', { class: 'section' }, h('h2', { class: 'section-title' }, 'Waiting for your payment'), h('div', { class: 'list' }, list.map(row))) : '');
   };
   update();
   const el = h(
     'div',
     { class: 'page' },
-    pageHead('DEPOSIT', 'Deposit ZEC', 'Get an address for an exact amount, pay it from any Zcash wallet, and the ecash is minted here once the payment confirms.'),
+    pageHead('Add money', { back: true }),
     h(
       'form',
       {
         class: 'stack',
         onsubmit: (e: SubmitEvent) => {
           e.preventDefault();
+          let zat: number | null;
+          try {
+            zat = amount.zat();
+          } catch {
+            return;
+          }
           void busy(
             submit,
             async () => {
-              const d = await app.onchain.createDeposit(amount.value);
+              const d = await app.onchain.createDeposit(String(zat));
               go(`/deposit?q=${encodeURIComponent(d.quote)}`, true);
             },
-            app.core.explain,
+            app.explain,
           );
         },
       },
-      amountField('Amount to deposit', amount),
+      amount.el,
       hint,
       h('div', { class: 'thumb' }, submit),
     ),
-    list,
+    open,
   );
   return { el, cleanup: app.onChange(update) };
 }
 
 function row(d: Deposit) {
-  const st = { unpaid: 'awaiting payment', paid: 'minting', expired: 'expired', done: 'minted' }[d.state];
   return h(
     'a',
     { href: `#/deposit?q=${encodeURIComponent(d.quote)}`, class: 'list-row' },
-    h('span', { class: 'mono' }, `${fmtZat(d.amount)} zat`),
-    h('span', { class: `hint t-${d.state === 'done' ? 'ok' : d.state === 'expired' ? 'muted' : 'live'}` }, `${st} · ${ago(d.created)}`),
+    h('span', { class: 'mono' }, moneyText(d.amount)),
+    h('span', { class: 'hint t-live' }, `${d.state === 'paid' ? 'adding' : 'waiting'} · ${ago(d.created)}`),
   );
 }
 
 function detail(app: App, d0: Deposit) {
   const uri = zip321(d0.address, d0.amount);
-  const state = h('div', { class: 'status-line big' });
+  const top = h('div', { class: 'flow' });
+  const state = h('div', { class: 'status-line' });
   const bar = h('div', { class: 'progress' });
   const pay = h(
     'div',
     { class: 'pay' },
-    qrCard(uri, { label: `QR code: pay ${fmtZec(d0.amount)} to the deposit address`, ecc: 'M' }),
-    h('div', { class: 'row wrap center' }, copyChip(d0.address, 'Address'), h('button', { type: 'button', class: 'btn', onclick: () => void copyText(uri, 'Payment URI') }, svg(ICON.copy), 'Copy payment URI')),
+    h('p', { class: 'confirm-label' }, 'Send exactly'),
+    moneyEl(d0.amount, { cls: 'code-money' }),
+    qrCard(uri, { label: `QR code: pay ${moneyText(d0.amount)} to the address`, ecc: 'M' }),
+    h('div', { class: 'row wrap center' }, copyChip(d0.address, 'Address'), h('button', { type: 'button', class: 'btn', onclick: () => void copyText(uri, 'Payment link') }, svg(ICON.copy), 'Copy payment link')),
   );
   const meta = h('p', { class: 'hint center' });
   /** On this screen messages never pop over the QR code: errors land here instead. */
@@ -97,36 +102,33 @@ function detail(app: App, d0: Deposit) {
     const d = app.onchain.deposits().find((x) => x.quote === d0.quote) ?? d0;
     if (d.state !== shownState) {
       shownState = d.state;
-      state.replaceChildren(
-        d.state === 'unpaid'
-          ? waiting('AWAITING PAYMENT')
-          : d.state === 'paid'
-            ? waiting('CONFIRMED · MINTING')
-            : d.state === 'done'
-              ? h('span', null, glitch('MINTED', 't-live'), h('span', { class: 'mono minted' }, ` +${fmtZat(d.minted ?? d.amount)} zat`))
-              : h('span', { class: 't-bad' }, 'EXPIRED'),
-      );
-      pay.hidden = d.state !== 'unpaid';
+      if (d.state === 'done') {
+        top.replaceChildren(resultView({ ok: true, title: 'Added', zat: d.minted ?? d.amount, sign: '+', text: d.warning, extra: backupNudge(app) }));
+      } else if (d.state === 'expired') {
+        top.replaceChildren(
+          resultView({
+            ok: false,
+            title: 'Expired',
+            text: 'No payment arrived in time. Don’t pay this address now; start again for a new one.',
+            actions: [h('a', { href: '#/deposit', class: 'btn primary block' }, 'Start again')],
+          }),
+        );
+      } else top.replaceChildren(pay, state, bar, meta, msg);
       if (d.state === 'unpaid') msg.setAttribute('data-toast-sink', '');
       else msg.removeAttribute('data-toast-sink');
     }
+    if (d.state !== 'unpaid' && d.state !== 'paid') return;
     const need = progress?.required_confirmations ?? 0;
     const got = progress?.confirmations ?? 0;
     const seen = (progress?.received_zats ?? 0) > 0;
-    if (d.state === 'unpaid' || d.state === 'paid') {
-      const filled = d.state === 'paid' ? 10 : seen ? filledSegments(got, need) : 0;
-      const label = d.state === 'paid' ? 'confirmed' : !seen ? 'waiting for the payment to be mined' : `${Math.min(got, need)} / ${plural(need, 'confirmation')}`;
-      bar.replaceChildren(h('div', { class: 'progress-head' }, h('span', { class: 'tag' }, '[ CONFIRMATIONS ]'), h('span', { class: 'mono' }, label)), segmentBar(filled, `Deposit confirmations: ${label}`));
+    state.replaceChildren(waiting(d.state === 'paid' ? 'Confirmed · adding…' : seen ? 'Payment seen · confirming…' : 'Waiting for your payment…'));
+    if (seen || d.state === 'paid') {
+      const filled = d.state === 'paid' ? 10 : filledSegments(got, need);
+      const label = d.state === 'paid' ? 'confirmed' : `${Math.min(got, need)} of ${plural(need, 'confirmation')}`;
+      bar.replaceChildren(h('div', { class: 'progress-head' }, h('span', null, 'Confirming'), h('span', { class: 'mono' }, label)), segmentBar(filled, `Confirmations: ${label}`));
       bar.hidden = false;
     } else bar.hidden = true;
-    meta.textContent =
-      d.state === 'unpaid'
-        ? `Expires in ${countdown(d.expiry)}${need ? ` · credited after ${plural(need, 'confirmation')}${app.core.mainnet ? ' (about 13 min)' : ''}` : ''}`
-        : d.state === 'expired'
-          ? "Expired before a payment confirmed. Don't pay this address now."
-          : d.state === 'done'
-            ? `Minted ${fmtZat(d.minted ?? d.amount)} zat into this wallet.${d.warning ? ` ${d.warning}` : ''}`
-            : 'The payment confirmed; the ecash is being minted (this resumes by itself after a reload).';
+    meta.textContent = d.state === 'unpaid' ? `From any Zcash wallet · pay within ${countdown(d.expiry)}` : 'Safe to close: it finishes by itself.';
   };
 
   const poll = async () => {
@@ -143,14 +145,13 @@ function detail(app: App, d0: Deposit) {
   const el = h(
     'div',
     { class: 'page' },
-    pageHead('DEPOSIT', `${fmtZat(d0.amount)} zat`, `Pay exactly ${fmtZec(d0.amount)}`),
-    pay,
-    state,
-    bar,
-    meta,
-    msg,
-    h('p', { class: 'hint center mono' }, `quote ${d0.quote}`),
-    h('a', { href: '#/deposit', class: 'btn block ghost' }, 'New deposit'),
+    pageHead('Add money', { back: true }),
+    top,
+    details(
+      kv('Quote', d0.quote),
+      kv('Address', copyChip(d0.address, 'Address', 8, 6)),
+      h('p', { class: 'hint' }, `A NUT-04 mint quote (method zec), locked to this browser's key (NUT-20). Credited after the mint's required confirmations${app.core.mainnet ? ' (about 13 minutes)' : ''}; the ecash is minted into this browser automatically.`),
+    ),
   );
   const off = app.onChange(render);
   return {

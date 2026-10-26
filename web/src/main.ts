@@ -16,19 +16,23 @@ import { createCore } from './wallet/core';
 import { initOnchain } from './wallet/onchain';
 import { createTokens } from './wallet/tokens';
 import { createPosRequests } from './wallet/posreq';
+import { holdings } from './wallet/backup';
 import { h, toast } from './ui/dom';
 import { activity } from './ui/pages/activity';
 import { deposit } from './ui/pages/deposit';
 import { home } from './ui/pages/home';
 import { receive } from './ui/pages/receive';
-import { request } from './ui/pages/request';
+import { scan } from './ui/pages/scan';
 import { send } from './ui/pages/send';
 import { settings } from './ui/pages/settings';
 import { status } from './ui/pages/status';
+import { welcome } from './ui/pages/welcome';
 import { withdraw } from './ui/pages/withdraw';
-import { back, start, type Path } from './ui/router';
+import { createPrefs } from './ui/prefs';
+import { go, start, type Path } from './ui/router';
 import { createShell } from './ui/shell';
 import type { App, Page } from './ui/widgets';
+import { plain, plainOrNull } from './ui/words';
 
 declare const __ZEC_NETWORK__: 'regtest' | 'mainnet';
 declare const __ZEC_MINT_URL__: string;
@@ -41,7 +45,7 @@ const CONFIGURED_MINT = __ZEC_MINT_URL__.replace(/\/+$/, '');
 /** The page must be opened at the configured mint URL, or tokens would name another mint. */
 function mintUrlProblem(): string | undefined {
   if (!CONFIGURED_MINT || CONFIGURED_MINT === MINT_URL) return undefined;
-  return `This page is open at ${location.origin}, so tokens would name ${MINT_URL}, but the mint is ${CONFIGURED_MINT}. Open ${CONFIGURED_MINT.replace(/\/mint$/, '')} instead.`;
+  return `This page is open at the wrong address (${location.origin}): money made here wouldn't work. Open ${CONFIGURED_MINT.replace(/\/mint$/, '')} instead.`;
 }
 
 const core = createCore({ mintUrl: MINT_URL, unit: UNIT, mainnet: MAINNET });
@@ -59,11 +63,15 @@ const onchain = initOnchain({
   isNetworkError: core.isNetworkError,
 });
 
+const prefs = createPrefs(core.key('ui'));
+
 const app: App = {
   core,
   tokens,
   onchain,
   posreq,
+  prefs,
+  explain: (e) => plain(core.explain(e)),
   feed: () => buildFeed({ deposits: onchain.deposits(), withdrawals: onchain.withdrawals(), sent: tokens.sent(), received: tokens.received(), requests: posreq.records() }),
   onChange(fn) {
     const a = core.on((e) => e.type !== 'say' && e.type !== 'mint' && fn());
@@ -78,20 +86,27 @@ const app: App = {
 const PAGES: Record<Path, Page> = {
   '/': home,
   '/send': send,
+  '/scan': scan,
   '/receive': receive,
+  '/activity': activity,
   '/deposit': deposit,
   '/withdraw': withdraw,
-  '/request': request,
-  '/activity': activity,
   '/status': status,
   '/settings': settings,
+  '/welcome': welcome,
 };
 
+/** A wallet that has never held anything: Home starts with the first-run screen. */
+const fresh = () => holdings(MINT_URL).empty && !app.feed().length;
+
 if (MAINNET) document.documentElement.classList.add('mainnet');
-const shell = createShell({ mainnet: MAINNET, mintHost: new URL(MINT_URL).host, onBack: () => back() });
+const shell = createShell({ mainnet: MAINNET, mintHost: new URL(MINT_URL).host });
 document.getElementById('app')!.replaceWith(shell.root);
 core.on((e) => {
-  if (e.type === 'say') toast(e.text, e.tone);
+  if (e.type === 'say') {
+    const text = plainOrNull(e.text);
+    if (text) toast(text, e.tone);
+  }
   if (e.type === 'mint') shell.setConnectivity(navigator.onLine, e.up);
 });
 const net = () => shell.setConnectivity(navigator.onLine, core.mintUp());
@@ -108,10 +123,15 @@ let fatal: string | undefined;
 start((route) => {
   cleanup?.();
   cleanup = undefined;
+  if (route.path === '/' && !prefs.get().welcomed) {
+    if (fresh()) return go('/welcome', true);
+    prefs.set({ welcomed: true }); // a wallet from before the first-run screen
+  }
   const page = PAGES[route.path];
-  shell.setRoute(route.path, page.title);
+  shell.setRoute(route.path);
+  document.title = route.path === '/' ? 'zec-ecash wallet' : `${page.title} · zec-ecash`;
   if (fatal && route.path !== '/status') {
-    shell.view.replaceChildren(h('div', { class: 'page' }, h('div', { class: 'fatal', role: 'alert' }, h('span', { class: 'tag t-bad' }, '[ WRONG ADDRESS ]'), h('p', null, fatal))));
+    shell.view.replaceChildren(h('div', { class: 'page' }, h('div', { class: 'fatal', role: 'alert' }, h('h1', { class: 'page-title' }, 'Wrong address'), h('p', null, fatal))));
     return;
   }
   const { el, cleanup: c } = page.render(app, route);
@@ -136,9 +156,9 @@ async function checkMint() {
   try {
     const info = await core.loadInfo();
     const units = new Set((info.nuts?.['4']?.methods ?? []).map((m) => m.unit));
-    if (!units.has(UNIT)) toast(`The mint has no ${UNIT} unit!`, 'bad');
+    if (!units.has(UNIT)) toast(`The service doesn't take ${UNIT} (the mint has no ${UNIT} unit).`, 'bad');
     if (!problem && (location.hostname === 'localhost' || location.hostname === '127.0.0.1')) {
-      toast(`Opened via ${location.hostname}: tokens will name ${MINT_URL}, which the phone and CLI don't use. Open the LAN address instead.`, 'bad');
+      toast(`Opened via ${location.hostname}: codes made here won't work on other devices. Open the LAN address instead.`, 'bad');
     }
     await core.connect();
     onchain.setInfo(info);
@@ -147,7 +167,7 @@ async function checkMint() {
     await tokens.redeemPending();
   } catch (e) {
     if (!navigator.onLine) return; // the offline strip already says so
-    toast(core.explain(e), 'bad');
+    toast(app.explain(e), 'bad');
   }
 }
 

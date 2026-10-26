@@ -56,11 +56,7 @@ const mainnetHtml: Plugin = {
     if (!MAINNET) return html;
     return html
       .replace(/<title>(.*?)<\/title>/, '<title>MAINNET · $1</title>')
-      .replace(/<div id="network-badge" class="network-badge" role="alert" hidden>/, '<div id="network-badge" class="network-badge" role="alert">')
-      .replace(
-        /(<div id="banner" class="banner" role="alert">)[\s\S]*?(<\/div>)/,
-        '$1\n      MAINNET: real ZEC. Experimental mint; keep only small amounts here. Ecash lives only in this\n      browser: clearing site data loses it.\n    $2',
-      );
+      .replace('<div id="network-badge" class="boot-net" hidden></div>', '<div id="network-badge" class="boot-net" role="alert">MAINNET · real ZEC</div>');
   },
 };
 

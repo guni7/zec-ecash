@@ -16,6 +16,9 @@
 // melt quotes leave out the change signatures (recovered with NUT-09 restore), and
 // a refused quote only says "Invalid payment request" / "Invalid payment method", so the real
 // reason comes from zec-processor's /deposit-quote and /withdrawal-quote.
+//
+// No DOM here: the pages (src/ui/pages/deposit.ts, withdraw.ts) render the saved records and
+// subscribe to changes.
 import {
   Amount,
   CheckStateEnum,
@@ -32,7 +35,6 @@ import {
   type SerializedOutputData,
   type Wallet,
 } from '@cashu/cashu-ts';
-import QRCode from 'qrcode';
 import { loadOrCreateKey } from './offline';
 
 const METHOD = 'zec';
@@ -50,9 +52,12 @@ export type Ctx = {
   say(text: string, kind?: 'ok' | 'bad' | ''): void;
   explain(e: unknown): string;
   isNetworkError(e: unknown): boolean;
-  busy<T>(button: HTMLButtonElement, work: () => Promise<T>): Promise<T | undefined>;
-  scan(prompt: string, onResult: (text: string) => void): void;
 };
+
+export type Limit = { min?: number; max?: number };
+
+/** A withdrawal quote waiting for the user's confirmation. */
+export type QuotedWithdrawal = { quote: ZecMeltQuote; amount: number; fee: number; address: string; total: number; note?: string };
 
 type ZecMintQuote = MintQuoteBaseResponse & { amount?: Amount | number; expiry?: number | null };
 type ZecMeltQuote = MeltQuoteBaseResponse & {
@@ -132,7 +137,7 @@ export function parsePaymentUri(text: string): { address: string; amount?: numbe
 const num = (x: unknown) => Number(String(x ?? 0));
 const sumProofs = (ps: Proof[]) => ps.reduce((a, p) => a + num(p.amount), 0);
 const short = (s: string) => (s.length > 24 ? `${s.slice(0, 14)}…${s.slice(-8)}` : s);
-const explorer = (txid: string) => `https://blockchair.com/zcash/transaction/${txid}`;
+export const explorer = (txid: string) => `https://blockchair.com/zcash/transaction/${txid}`;
 
 function parseZat(text: string, what: string): number {
   const n = Number(text);
@@ -146,12 +151,6 @@ function load<T>(key: string): T[] {
   } catch {
     return [];
   }
-}
-
-function el<K extends keyof HTMLElementTagNameMap>(tag: K, props: Record<string, unknown> = {}, ...kids: Array<Node | string>): HTMLElementTagNameMap[K] {
-  const e = Object.assign(document.createElement(tag), props);
-  e.append(...kids);
-  return e;
 }
 
 // ---- the module ----
@@ -169,29 +168,12 @@ export function initOnchain(ctx: Ctx) {
   /** Quotes with a request in flight in this page; the poller leaves them alone. */
   const inFlight = new Set<string>();
 
-  const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
-  const els = {
-    depAmount: $<HTMLInputElement>('dep-amount'),
-    depBtn: $<HTMLButtonElement>('dep-btn'),
-    depLimits: $('dep-limits'),
-    deposits: $('deposits'),
-    wdAddress: $<HTMLTextAreaElement>('wd-address'),
-    wdScan: $<HTMLButtonElement>('wd-scan'),
-    wdAmount: $<HTMLInputElement>('wd-amount'),
-    wdBtn: $<HTMLButtonElement>('wd-btn'),
-    wdLimits: $('wd-limits'),
-    wdQuote: $('wd-quote'),
-    wdSummary: $('wd-summary'),
-    wdAckRow: $('wd-ack-row'),
-    wdAck: $<HTMLInputElement>('wd-ack'),
-    wdConfirm: $<HTMLButtonElement>('wd-confirm'),
-    wdCancel: $<HTMLButtonElement>('wd-cancel'),
-    withdrawals: $('withdrawals'),
-  };
+  const listeners = new Set<() => void>();
+  /** Tells the pages that a deposit or withdrawal changed. */
+  const emit = () => listeners.forEach((l) => l());
 
   // ---- limits (NUT-04 / NUT-05 settings for zec/zat) ----
 
-  type Limit = { min?: number; max?: number };
   let limits: { mint: Limit; melt: Limit } = { mint: {}, melt: {} };
 
   function setInfo(info: { nuts?: Record<string, { methods?: Array<{ method: string; unit: string; min_amount?: number; max_amount?: number }> }> }) {
@@ -200,9 +182,7 @@ export function initOnchain(ctx: Ctx) {
       return { min: m?.min_amount ?? undefined, max: m?.max_amount ?? undefined };
     };
     limits = { mint: pick('4'), melt: pick('5') };
-    const text = (l: Limit) => (l.min || l.max ? `${l.min ?? 1} to ${l.max ?? '∞'} ${ctx.unit}` : '');
-    els.depLimits.textContent = text(limits.mint) && `Deposits: ${text(limits.mint)}.`;
-    els.wdLimits.textContent = text(limits.melt) && `Withdrawals: ${text(limits.melt)}, plus the network fee.`;
+    emit();
   }
 
   function checkLimit(amount: number, l: Limit, what: string) {
@@ -259,7 +239,7 @@ export function initOnchain(ctx: Ctx) {
 
   // ---- deposits ----
 
-  async function createDeposit(amountText: string) {
+  async function createDeposit(amountText: string): Promise<Deposit> {
     const amount = parseZat(amountText, 'deposit amount');
     checkLimit(amount, limits.mint, 'deposit');
     const w = await ctx.connect();
@@ -273,9 +253,9 @@ export function initOnchain(ctx: Ctx) {
     if (num(q.amount) !== amount) throw new Error(`The mint quoted ${num(q.amount)} ${ctx.unit}, not ${amount}; not using it.`);
     deposits = [{ quote: q.quote, amount, address: q.request, expiry: q.expiry ?? null, created: Date.now(), state: 'unpaid' }, ...deposits];
     saveDeposits();
-    els.depAmount.value = '';
-    render();
+    emit();
     ctx.say(`Deposit quote created: pay exactly ${zatToZec(amount)} ZEC to the address shown. Ecash is minted automatically once it confirms.`, 'ok');
+    return deposits[0];
   }
 
   async function checkDeposit(w: Wallet, d: Deposit) {
@@ -285,7 +265,7 @@ export function initOnchain(ctx: Ctx) {
     if (paid > issued) {
       d.state = 'paid';
       saveDeposits();
-      render();
+      emit();
       await mintDeposit(w, d, paid - issued);
     } else if (issued > 0) {
       // Issued: by us just now in a request whose answer was lost, or long ago.
@@ -354,12 +334,13 @@ export function initOnchain(ctx: Ctx) {
 
   // ---- withdrawals ----
 
-  let quoted: { quote: ZecMeltQuote; amount: number; fee: number; address: string } | null = null;
+  let quoted: QuotedWithdrawal | null = null;
 
-  async function quoteWithdrawal() {
-    const uri = parsePaymentUri(els.wdAddress.value);
-    if (uri.amount !== undefined && !els.wdAmount.value) els.wdAmount.value = String(uri.amount);
-    const amount = parseZat(els.wdAmount.value, 'withdrawal amount');
+  /** `amountText` may be empty when the address is a ZIP-321 URI with an amount. */
+  async function quoteWithdrawal(addressText: string, amountText: string): Promise<QuotedWithdrawal> {
+    const uri = parsePaymentUri(addressText);
+    if (uri.amount !== undefined && !amountText.trim()) amountText = String(uri.amount);
+    const amount = parseZat(amountText, 'withdrawal amount');
     checkLimit(amount, limits.melt, 'withdrawal');
     const w = await ctx.connect();
     let q: ZecMeltQuote;
@@ -370,25 +351,15 @@ export function initOnchain(ctx: Ctx) {
     }
     if (num(q.amount) !== amount) throw new Error(`The mint quoted ${num(q.amount)} ${ctx.unit}, not ${amount}; not using it.`);
     const fee = num(q.fee_reserve);
-    quoted = { quote: q, amount, fee, address: uri.address };
-    const total = amount + fee;
-    const balance = sumProofs(ctx.proofs());
-    els.wdSummary.textContent =
-      `Send ${amount} ${ctx.unit} (${zatToZec(amount)} ZEC) to ${short(uri.address)}. Network fee up to ${fee} ${ctx.unit}; ` +
-      `what isn't used comes back as change. Total ${total} ${ctx.unit} of ecash` +
-      (balance < total ? `, but your balance is ${balance} ${ctx.unit}.` : '.') +
-      (uri.note ? ` ${uri.note}` : '');
-    els.wdQuote.hidden = false;
-    els.wdAckRow.hidden = !ctx.mainnet;
-    els.wdAck.checked = false;
-    els.wdConfirm.disabled = ctx.mainnet || balance < total;
-    els.wdConfirm.textContent = ctx.mainnet ? 'Send real ZEC' : 'Send ZEC';
+    quoted = { quote: q, amount, fee, address: uri.address, total: amount + fee, note: uri.note };
+    return quoted;
   }
 
-  async function confirmWithdrawal() {
+  /** `ack`: on mainnet, the user ticked "this sends real ZEC". */
+  async function confirmWithdrawal(ack: boolean): Promise<Withdrawal | undefined> {
     if (!quoted) return;
     const { quote: q, amount, fee, address } = quoted;
-    if (ctx.mainnet && !els.wdAck.checked) throw new Error('Tick the box to confirm you are sending real ZEC.');
+    if (ctx.mainnet && !ack) throw new Error('Tick the box to confirm you are sending real ZEC.');
     if (q.expiry && Date.now() / 1000 > q.expiry - 15) throw new Error('This quote has expired; get a new one.');
     const w = await ctx.connect();
     // Inputs covering amount + fee reserve (+ input fees); the mint returns the rest as NUT-08 change.
@@ -411,11 +382,9 @@ export function initOnchain(ctx: Ctx) {
     const gone = new Set(preview.inputs.map((p) => p.secret));
     ctx.setProofs(ctx.proofs().filter((p) => !gone.has(p.secret)));
     quoted = null;
-    els.wdQuote.hidden = true;
-    els.wdAddress.value = '';
-    els.wdAmount.value = '';
-    render();
+    emit();
     await sendMelt(w, wd);
+    return wd;
   }
 
   async function sendMelt(w: Wallet, wd: Withdrawal) {
@@ -445,7 +414,7 @@ export function initOnchain(ctx: Ctx) {
       await settleRefused(w, wd, ctx.explain(e));
     } finally {
       inFlight.delete(wd.quote);
-      render();
+      emit();
     }
   }
 
@@ -542,172 +511,31 @@ export function initOnchain(ctx: Ctx) {
       /* mint unreachable: everything stays saved; next tick */
     } finally {
       ticking = false;
-      render();
+      emit();
     }
   }
 
-  // ---- rendering ----
-
-  const depEls = new Map<string, { root: HTMLElement; state: HTMLElement; pay: HTMLElement; meta: HTMLElement; dismiss: HTMLButtonElement }>();
-  const wdEls = new Map<string, { root: HTMLElement; state: HTMLElement; meta: HTMLElement; dismiss: HTMLButtonElement }>();
-
-  function countdown(expiry: number | null) {
-    if (!expiry) return '';
-    const s = Math.round(expiry - Date.now() / 1000);
-    if (s <= 0) return 'expired';
-    return `expires in ${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
-  }
-
-  async function copy(text: string, what: string) {
-    try {
-      await navigator.clipboard.writeText(text);
-      ctx.say(`${what} copied.`, 'ok');
-    } catch {
-      ctx.say(`Copy blocked by the browser: select the ${what.toLowerCase()} text and copy it by hand.`, 'bad');
-    }
-  }
-
-  function depositEl(d: Deposit) {
-    let e = depEls.get(d.quote);
-    if (e) return e;
-    const uri = zip321(d.address, d.amount);
-    const canvas = el('canvas');
-    void QRCode.toCanvas(canvas, uri, { errorCorrectionLevel: 'M', margin: 1, width: 260 }).catch(() => (canvas.hidden = true));
-    const uriText = el('textarea', { rows: 3, readOnly: true, spellcheck: false, value: uri, className: 'uri' });
-    const copyUri = el('button', { type: 'button', textContent: 'Copy payment URI' });
-    copyUri.onclick = () => void copy(uri, 'Payment URI');
-    const copyAddr = el('button', { type: 'button', textContent: 'Copy address' });
-    copyAddr.onclick = () => void copy(d.address, 'Address');
-    const pay = el('div', { className: 'pay' }, el('p', { className: 'muted', textContent: `Pay exactly ${zatToZec(d.amount)} ZEC to:` }), canvas, uriText, el('div', { className: 'row' }, copyUri, copyAddr));
-    const state = el('span', { className: 'state' });
-    const meta = el('div', { className: 'muted' });
-    const dismiss = el('button', { type: 'button', textContent: 'Dismiss', className: 'small' });
-    dismiss.onclick = () => {
-      deposits = deposits.filter((x) => x.quote !== d.quote);
-      saveDeposits();
-      depEls.get(d.quote)?.root.remove();
-      depEls.delete(d.quote);
-    };
-    const root = el('div', { className: 'item' }, el('div', { className: 'item-head' }, el('strong', { textContent: `Deposit ${d.amount} ${ctx.unit}` }), state), pay, meta, dismiss);
-    root.dataset.quote = d.quote;
-    e = { root, state, pay, meta, dismiss };
-    depEls.set(d.quote, e);
-    els.deposits.prepend(root);
-    return e;
-  }
-
-  function withdrawalEl(wd: Withdrawal) {
-    let e = wdEls.get(wd.quote);
-    if (e) return e;
-    const state = el('span', { className: 'state' });
-    const meta = el('div', { className: 'muted' });
-    const dismiss = el('button', { type: 'button', textContent: 'Dismiss', className: 'small' });
-    dismiss.onclick = () => {
-      withdrawals = withdrawals.filter((x) => x.quote !== wd.quote);
-      saveWithdrawals();
-      wdEls.get(wd.quote)?.root.remove();
-      wdEls.delete(wd.quote);
-    };
-    const head = el('div', { className: 'item-head' }, el('strong', { textContent: `Withdraw ${wd.amount} ${ctx.unit}` }), state);
-    const root = el('div', { className: 'item' }, head, el('div', { className: 'muted addr', textContent: `to ${wd.address}` }), meta, dismiss);
-    root.dataset.quote = wd.quote;
-    e = { root, state, meta, dismiss };
-    wdEls.set(wd.quote, e);
-    els.withdrawals.prepend(root);
-    return e;
-  }
-
-  function render() {
-    // Newest first: walk oldest to newest, prepending each new element.
-    for (const d of [...deposits].reverse()) {
-      const e = depositEl(d);
-      const [text, cls] = {
-        unpaid: ['Waiting for payment', ''],
-        paid: ['Paid: minting ecash…', 'ok'],
-        expired: ['Expired unpaid', 'bad'],
-        done: [`Minted ${d.minted ?? d.amount} ${ctx.unit} ✓`, 'ok'],
-      }[d.state];
-      e.state.textContent = text;
-      e.state.className = `state ${cls}`;
-      e.pay.hidden = d.state !== 'unpaid';
-      e.dismiss.hidden = d.state !== 'done' && d.state !== 'expired';
-      e.root.dataset.state = d.state;
-      e.meta.textContent =
-        d.state === 'unpaid'
-          ? `${countdown(d.expiry)} · credited once the payment has the mint's confirmations${ctx.mainnet ? ' (about 13 minutes on mainnet)' : ''} · quote ${short(d.quote)}`
-          : d.state === 'expired'
-            ? `Don't pay this address now. Quote ${short(d.quote)}.`
-            : `quote ${short(d.quote)}${d.warning ? ` · ${d.warning}` : ''}`;
-    }
-    for (const wd of [...withdrawals].reverse()) {
-      const e = withdrawalEl(wd);
-      const [text, cls] = {
-        sending: ['Sending…', ''],
-        pending: ['Pending', ''],
-        paid: ['Paid ✓', 'ok'],
-        returned: ['Not sent: ecash returned', 'bad'],
-      }[wd.state];
-      e.state.textContent = text;
-      e.state.className = `state ${cls}`;
-      e.root.dataset.state = wd.state;
-      e.dismiss.hidden = wd.state !== 'paid' && wd.state !== 'returned';
-      e.meta.replaceChildren();
-      if (wd.state === 'paid') {
-        e.meta.append(`fee ${wd.fee} ${ctx.unit} · change ${wd.change} ${ctx.unit}`);
-        if (wd.txid) {
-          e.meta.append(el('br'), 'txid ', el('code', { textContent: wd.txid, className: 'txid' }));
-          if (ctx.mainnet) e.meta.append(' ', el('a', { href: explorer(wd.txid), target: '_blank', rel: 'noopener', textContent: 'view in explorer' }));
-          else e.meta.append(' (regtest: no public explorer)');
-        }
-        if (wd.note) e.meta.append(el('br'), wd.note);
-      } else if (wd.state === 'returned') {
-        e.meta.append(wd.note ?? '');
-      } else {
-        e.meta.append(`${wd.amount + wd.feeReserve} ${ctx.unit} of ecash held for it (fee reserve ${wd.feeReserve}); the guardians sign, then it waits to be mined. Quote ${short(wd.quote)}.`);
-      }
-    }
-  }
-
-  // ---- wiring ----
-
-  els.depBtn.onclick = () => void ctx.busy(els.depBtn, () => createDeposit(els.depAmount.value));
-  els.wdBtn.onclick = () => void ctx.busy(els.wdBtn, () => quoteWithdrawal());
-  els.wdConfirm.onclick = () => void ctx.busy(els.wdConfirm, () => confirmWithdrawal());
-  els.wdCancel.onclick = () => {
-    quoted = null;
-    els.wdQuote.hidden = true;
-  };
-  els.wdAck.onchange = () => {
-    if (!quoted) return;
-    els.wdConfirm.disabled = !els.wdAck.checked || sumProofs(ctx.proofs()) < quoted.amount + quoted.fee;
-  };
-  // A changed address or amount invalidates the quote shown.
-  els.wdAddress.oninput = els.wdAmount.oninput = () => {
-    quoted = null;
-    els.wdQuote.hidden = true;
-  };
-  els.wdScan.onclick = () =>
-    ctx.scan('Point the camera at a Zcash address or payment QR code.', (text) => {
-      els.wdAddress.value = text;
-      try {
-        const uri = parsePaymentUri(text);
-        if (uri.amount !== undefined) els.wdAmount.value = String(uri.amount);
-        ctx.say(uri.amount !== undefined ? `Scanned: ${uri.amount} ${ctx.unit} to ${short(uri.address)}. Get a quote to continue.` : 'Address scanned. Enter an amount and get a quote.', 'ok');
-      } catch (e) {
-        ctx.say(ctx.explain(e), 'bad');
-      }
-    });
-
-  render();
   setInterval(() => void tick(), POLL_MS);
-  setInterval(() => {
-    // countdowns
-    if (deposits.some((d) => d.state === 'unpaid')) render();
-  }, 1000);
 
   return {
     setInfo,
     /** After (re)connecting: resume everything saved, including expired deposits. */
     resume: () => tick(true),
+    /** One poll pass now (e.g. when a page opens). */
+    tick: () => tick(),
+    createDeposit,
+    quoteWithdrawal,
+    confirmWithdrawal,
+    cancelQuote: () => {
+      quoted = null;
+    },
+    deposits: (): readonly Deposit[] => deposits,
+    withdrawals: (): readonly Withdrawal[] => withdrawals,
+    limits: () => limits,
+    /** Calls `fn` after every change to a deposit or withdrawal; returns the unsubscribe. */
+    subscribe(fn: () => void) {
+      listeners.add(fn);
+      return () => listeners.delete(fn);
+    },
   };
 }

@@ -31,6 +31,9 @@ guardian-ca.key
 **/dkg/
 # per-quote guardian signing records (reset together with the mint DB)
 devnet/guardian-*.signed.json
+# point of sale state: wallet, requests, admin socket, and swept tokens (spendable ecash)
+devnet/pos/
+*.token
 
 # MAINNET state, all of it (keys, ca/, mint/, DBs, logs, dkg/, judge-kit/, .env): never committed,
 # never touched by scripts/devnet-reset.sh.

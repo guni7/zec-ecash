@@ -258,6 +258,8 @@ try {
   await nav(A, '/withdraw');
   await shot(A, 'phone-withdraw-form');
   await nav(A, '/request');
+  await A.waitFor(`document.querySelector('.pos-offline').hidden && !document.querySelector('.page form button[type=submit]').disabled`, 10000);
+  log('ok: point of sale up: Create request enabled');
   await A.eval(fill('.page form .amount-input', '1500'));
   await A.eval(click('.page form button[type=submit]'));
   await A.waitFor(`document.querySelector('.qr-card canvas')`, 15000);

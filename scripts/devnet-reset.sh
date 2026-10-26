@@ -66,7 +66,7 @@ pkill -TERM -f 'web/node_modules/.bin/vite' 2>/dev/null || true
 
 echo "deleting chain-dependent state:"
 for p in devnet/zebra-state devnet/mint devnet/*.sqlite devnet/*.sqlite-shm devnet/*.sqlite-wal \
-         devnet/*.sqlite-journal devnet/*.redb devnet/guardian-*.signed.json devnet/*.log devnet/logs devnet/quote.json; do
+         devnet/*.sqlite-journal devnet/*.redb devnet/pos devnet/guardian-*.signed.json devnet/*.log devnet/logs devnet/quote.json; do
   if [ -e "$p" ]; then rm -rf "$p"; echo "  deleted $p"; fi
 done
 

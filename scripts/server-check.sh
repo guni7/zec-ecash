@@ -10,7 +10,8 @@
 # What it prints:
 #   both          systemd status of this box's units; guardian TLS certificate expiry; free disk
 #   main host     public certificate expiry, /reserves, every guardian's reachability (over TLS,
-#                 with the guardian CA) and that all report the same group key
+#                 with the guardian CA) and that all report the same group key; the point of sale
+#                 (if its seed exists): /health locally and publicly, and what its wallet holds
 set -u
 MAIN_DIR=${ZEC_MAIN_DIR:-$HOME/zec-ecash}
 MAIN_ENV=$MAIN_DIR/mainnet/.env
@@ -21,6 +22,7 @@ ok() { echo "  ok $*"; }
 setting() { [ -f "$1" ] && sed -n "s/^$2=//p" "$1" | tail -1 | sed 's/^["'\'']//; s/["'\'']$//'; }
 
 is_main=0; [ -f "$MAIN_ENV" ] && is_main=1
+has_pos=0; [ $is_main = 1 ] && [ -f "$MAIN_DIR/mainnet/keys/pos-wallet.seed" ] && has_pos=1
 guardian_ids=""
 for f in "$G_HOME"/keys/guardian-[123].key; do
   [ -e "$f" ] && guardian_ids="$guardian_ids $(basename "$f" .key | sed 's/guardian-//')"
@@ -47,6 +49,7 @@ echo "services:"
 if command -v systemctl >/dev/null 2>&1; then
   units=""
   [ $is_main = 1 ] && units="zec-processor zec-mintd caddy"
+  [ $has_pos = 1 ] && units="$units zec-pos"
   for id in $guardian_ids; do units="$units zec-guardian@$id"; done
   for u in $units; do
     state=$(systemctl is-active "$u" 2>/dev/null); state=${state:-unknown}
@@ -114,6 +117,22 @@ if [ $is_main = 1 ]; then
   [ "$distinct" -le 1 ] || bad "guardians report different group keys"
   if [ "$up" -ge 2 ]; then ok "$up of $n guardians up: withdrawals can be signed (2 needed)"
   else bad "only $up of $n guardians up: withdrawals CANNOT be signed (2 needed)"; fi
+
+  echo "point of sale:"
+  if [ $has_pos = 0 ]; then
+    echo "  (not set up: no mainnet/keys/pos-wallet.seed; the web page shows it as offline)"
+  else
+    pa=$(setting "$MAIN_ENV" ZEC_POS_ADDR); pa=${pa:-127.0.0.1:9090}
+    if curl -s -m 5 "http://$pa/health" | grep -q '"ok":true'; then ok "pos answers on $pa"; else bad "pos not answering on $pa (zec-pos.service)"; fi
+    pu=$(setting "$MAIN_ENV" ZEC_POS_URL)
+    if [ -n "$pu" ]; then
+      if curl -s -m 5 "$pu/health" | grep -q '"ok":true'; then ok "public $pu/health reachable (Caddy -> pos)"; else bad "public $pu/health not reachable (Caddy route /pos/* or the pos is down)"; fi
+    fi
+    if [ -S "$MAIN_DIR/mainnet/pos/admin.sock" ] && [ -x "$MAIN_DIR/target/release/pos" ]; then
+      held=$(cd "$MAIN_DIR" && ZEC_NETWORK=mainnet ./target/release/pos balance 2>/dev/null | sed -n 's/.*holds \([0-9]*\) zat.*/\1/p')
+      ok "pos wallet holds ${held:-?} zat (move it out: ZEC_NETWORK=mainnet ./target/release/pos sweep)"
+    fi
+  fi
 fi
 
 echo "disk:"

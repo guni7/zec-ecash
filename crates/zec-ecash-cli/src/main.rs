@@ -22,6 +22,8 @@
 //! Global flags (before the command), each also settable in the environment or `.env`:
 //!   --wallet <name>   default "ecash": seed devnet/keys/<name>-wallet.seed (survives resets),
 //!                     DB devnet/<name>-wallet.redb (deleted by resets). `--wallet bob` is Bob.
+//!                     `--wallet pos` is the point of sale's wallet (DB in devnet/pos/); stop the
+//!                     POS server first (or use `pos sweep`, which asks the running server).
 //!   --mint <url>      ZEC_MINT_URL, default http://127.0.0.1:8085 (MAINNET 9085). Must be the exact URL the
 //!                     phone uses (tokens carry it), e.g. https://<LAN-IP>:5173/mint
 //!   --mint-ca <pem>   ZEC_MINT_CA: extra CA to trust for an https mint URL (e.g. mkcert's
@@ -142,7 +144,8 @@ async fn run(opts: Opts) -> Result<()> {
         eprintln!("zec-ecash-cli: *** MAINNET (real ZEC) *** wallet `{}`, mint {}", opts.wallet, opts.mint_url);
     }
     let seed_path = dir.join(format!("keys/{}-wallet.seed", opts.wallet));
-    let db_path = dir.join(format!("{}-wallet", opts.wallet));
+    // The point of sale keeps its wallet in <state>/pos/ (crates/pos).
+    let db_path = if opts.wallet == "pos" { dir.join("pos/pos-wallet") } else { dir.join(format!("{}-wallet", opts.wallet)) };
     let cmd = opts.cmd;
     if cmd.first().map(String::as_str) == Some("init") {
         return init_seed(&seed_path, network);
@@ -166,6 +169,17 @@ async fn run(opts: Opts) -> Result<()> {
     if cmd.first().map(String::as_str) == Some("pubkey") {
         println!("{}", tokens::p2pk_key(&seed)?.public_key());
         return Ok(());
+    }
+    // Never share the POS wallet DB with the running POS server (redb's lock does not always
+    // stop a second process): use `pos sweep`, which asks the server, or stop it first.
+    #[cfg(unix)]
+    if opts.wallet == "pos" && std::os::unix::net::UnixStream::connect(dir.join("pos/admin.sock")).is_ok() {
+        bail!(
+            "the POS server is running and owns this wallet. Use `{}pos sweep` (asks the server), or stop it \
+             first ({}) and run this again",
+            if network.is_mainnet() { "ZEC_NETWORK=mainnet ./target/release/" } else { "./target/debug/" },
+            if network.is_mainnet() { "sudo systemctl stop zec-pos" } else { "kill the pos on port 8090" }
+        );
     }
     let wallet = open_wallet(&opts.mint_url, &db_path, seed)
         .with_context(|| format!("wallet `{}` at {}", opts.wallet, opts.mint_url))?;

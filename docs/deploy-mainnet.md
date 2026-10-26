@@ -42,7 +42,7 @@ sudo apt install -y build-essential pkg-config git sqlite3
 curl https://sh.rustup.rs -sSf | sh -s -- -y && . ~/.cargo/env
 git clone https://github.com/guni7/zec-ecash.git ~/zec-ecash && cd ~/zec-ecash
 git checkout <the reviewed commit>          # deploy-only checkout: never commit here (section 11)
-cargo build --release -p zec-processor -p guardian -p zec-ecash-cli
+cargo build --release -p zec-processor -p guardian -p zec-ecash-cli -p pos
 cargo install cdk-mintd --version 0.18.2 --locked          # -> ~/.cargo/bin/cdk-mintd
 sudo install -m 755 target/release/guardian /usr/local/bin/guardian    # guardian 1
 mkdir -m 700 -p ~/zec-ecash/mainnet/keys ~/mainnet/keys
@@ -83,7 +83,7 @@ loopback. Guardian 2's port accepts the main host's IP only.
 | Machine | Port | Who may connect |
 |---|---|---|
 | main host | 443/tcp, 80/tcp | everyone (Caddy) |
-| main host | 9085 cdk-mintd, 51051 processor gRPC, 9095 status, 8101 guardian 1 | loopback only |
+| main host | 9085 cdk-mintd, 51051 processor gRPC, 9095 status, 9090 point of sale, 8101 guardian 1 | loopback only |
 | guardian 2 | 8102/tcp (TLS) | the main host's IP only |
 | guardian 3 | 8103/tcp (TLS) | the main host only (section 9) |
 | both Vultr boxes | 22/tcp | your admin IPs only |
@@ -301,6 +301,51 @@ A unit that stays `inactive` with `ConditionResult=no` is waiting for a file
 `scripts/mainnet-up.sh` still works as an alternative to systemd on a host with the repo (roles in
 `ZEC_ROLES`, guardian state in the repo's `mainnet/`); don't run both.
 
+### Point of sale (main host, optional)
+
+The web wallet's Request page creates NUT-18 payment requests at the point of sale
+(`crates/pos`, `zec-pos.service`): Caddy proxies `https://zecmint.duckdns.org/pos/*` to it on
+127.0.0.1:9090. Without it the page says "Point of sale is offline" and disables Create request.
+It accepts payments only at `ZEC_MINT_URL`, only in zat, P2PK-locked to its own key; its settings
+(`ZEC_POS_URL`, `ZEC_POS_ADDR`) are in `mainnet/.env` (see `deploy/mainnet.env.example`).
+
+Install and start (the unit was copied with the others above):
+
+```sh
+cd ~/zec-ecash
+ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos init   # once: mainnet/keys/pos-wallet.seed, mode 600
+sudo systemctl enable --now zec-pos
+```
+
+`init` refuses to overwrite an existing seed. Back the seed up like any wallet seed: the POS
+wallet holds every payment it has taken. Its state is in `mainnet/pos/` (wallet, requests, the
+admin socket, saved sweep tokens).
+
+Check:
+
+```sh
+systemctl status zec-pos && tail -f ~/zec-ecash/mainnet/logs/pos.log
+curl -s http://127.0.0.1:9090/health; curl -s https://zecmint.duckdns.org/pos/health
+ZEC_NETWORK=mainnet ./target/release/pos balance                       # what it holds
+```
+
+Move the takings out regularly (payments only ever accumulate there):
+
+```sh
+ZEC_NETWORK=mainnet ./target/release/pos sweep          # a token for all of it (or: pos sweep <zat>)
+ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli receive <token>       # into your own wallet
+ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli withdraw <zat> <u1...>   # and out to ZEC, if you like
+```
+
+`pos sweep` asks the running service over `mainnet/pos/admin.sock` (mode 600, only `gunit`), so
+it keeps serving; each token is also saved in `mainnet/pos/sweeps/` (mode 600) before it is
+printed: delete the file once the token is redeemed. To withdraw straight from the POS wallet
+instead, stop the service first (its wallet DB is locked while it runs):
+`sudo systemctl stop zec-pos && ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos withdraw <zat> <u1...> && sudo systemctl start zec-pos`.
+
+`server-check.sh` checks the unit, `/health` locally and through Caddy, and prints what the POS
+wallet holds.
+
 ## 8. Before the first transaction
 
 - `server-check.sh` reports "all good" on the main host and guardian 2.
@@ -309,7 +354,8 @@ A unit that stays `inactive` with `ConditionResult=no` is waiting for a file
 - `curl https://zecmint.duckdns.org/reserves`: `"state":"ok"`.
 - Each guardian's `verify` reported that all three agree; key shares backed up.
 - From another machine: guardian 2's 8102 is closed (only the main host gets in), and the main
-  host's 9085, 9095, 51051 and 8101 are closed.
+  host's 9085, 9095, 9090, 51051 and 8101 are closed.
+- `curl https://zecmint.duckdns.org/pos/health`: `{"ok":true,...}` (if you run the point of sale).
 - Then one small deposit (10,000 zat or more) and one small withdrawal, watched end to end.
 
 ## 9. Guardian 3 on a Mac
@@ -342,10 +388,11 @@ Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two g
   txid and reason are in `processor.log` (the CRITICAL line) and in
   `ZEC_NETWORK=mainnet ./target/release/zec-processor operator-actions`.
 - Updating: rebuild on the main host, `sudo install` the new guardian binary on each guardian box,
-  `sudo systemctl restart zec-guardian@N zec-processor zec-mintd`.
+  `sudo systemctl restart zec-guardian@N zec-processor zec-mintd zec-pos`.
 - Rotating a guardian's auth secret: `make-auth-key` refuses to overwrite, so move the old
   `guardian-N.auth` aside on both machines, make a new one, copy it, restart both.
 - Rotating TLS: `scripts/guardian-ca.sh issue` again with the CA key, copy, restart the guardian.
+- Point of sale takings: `ZEC_NETWORK=mainnet ./target/release/pos sweep` (section 7).
 
 ## 11. Never commit
 
@@ -353,8 +400,9 @@ Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two g
 
 - **Secrets:** every `.env` anywhere (`.env`, `mainnet/.env`, `*.env`; only the commented
   `*.env.example` templates are tracked), `devnet/keys/`, `*.key`, `*.auth`, `*.seed`, `*.gpg`,
-  `*-key.pem` (incl. `rootCA-key.pem`), `guardian-ca.key`, `web/certs/`, and every `dkg/`
-  directory (round-1/round-2/verify files and DKG state).
+  `*-key.pem` (incl. `rootCA-key.pem`), `guardian-ca.key`, `web/certs/`, every `dkg/`
+  directory (round-1/round-2/verify files and DKG state), and `*.token` (point-of-sale sweeps:
+  spendable ecash) with the POS state in `devnet/pos/`.
 - **The whole `mainnet/` directory:** keys, `ca/`, `mint/`, databases, logs, `dkg/`, `judge-kit/`.
 - **State and logs:** `*.sqlite`, `*.sqlite-*`, `*.db`, `*.redb`, the devnet chain and mint work
   dirs under `devnet/`, `*.log`, `*.log.*`, `logs/`.

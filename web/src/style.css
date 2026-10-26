@@ -585,3 +585,6 @@ details.details textarea { margin-top: 6px; }
 .review .thumb .btn.confirm { flex: 2; }
 .op-actions { display: flex; flex-direction: column; gap: 2px; }
 @media (min-width: 900px) { .toasts-inline { padding: 0 32px; } }
+.pos-offline { padding: 14px 16px; border: 1px solid var(--warn); border-radius: var(--radius-sm); background: #2a1c06; color: var(--warn); }
+.pos-offline strong { display: block; font: 700 15px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; }
+.pos-offline p { margin: 4px 0 0; color: var(--fg-2); font-size: 14px; }

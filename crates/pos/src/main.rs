@@ -13,10 +13,21 @@
 //!   GET  /create?amount=<zat>&unit=zat  -> {id, request: "creqA..."}  (single-use, HttpPost transport)
 //!   GET  /check/{id}                    -> {id, amount, received, state}
 //!   POST /payment                       <- PaymentRequestPayload (NUT-18)
+//!   GET  /health                        -> {ok, unit, mint} (the web page's "is it up?")
 //!
-//! Listens on 127.0.0.1:8090; the web dev server proxies https://<host>:5173/pos/* to it, which is
-//! also the transport URL in the requests. Needs devnet/keys/pos-wallet.seed
-//! (`zec-ecash-cli --wallet pos init`); never creates it.
+//! Listens on 127.0.0.1:8090 (MAINNET 127.0.0.1:9090, loopback only); the web server proxies
+//! https://<host>/pos/* to it, which is also the transport URL in the requests (ZEC_POS_URL).
+//! Needs <state>/keys/pos-wallet.seed (`zec-ecash-cli --wallet pos init`); never creates it.
+//! Its wallet and request DB live in <state>/pos/ (an older <state>/pos-wallet.redb and
+//! pos.sqlite are moved there on start).
+//!
+//! Moving the takings out (the wallet only ever fills up):
+//!   pos balance           # what the POS wallet holds
+//!   pos sweep [<zat>]     # a token for all of it (or <zat>); also saved, mode 600, in
+//!                         # <state>/pos/sweeps/. Receive it in your own wallet, then withdraw.
+//! Both talk to the running server over <state>/pos/admin.sock (mode 600, in a mode-700
+//! directory), so the server keeps serving; with the server stopped they open the wallet directly.
+//! With the server stopped, `zec-ecash-cli --wallet pos withdraw <zat> <address>` works too.
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -40,7 +51,7 @@ use cdk::{
         CurrencyUnit, Kind, Nut10SecretRequest, PaymentRequest, PaymentRequestPayload, PublicKey, SecretKey,
         SpendingConditions, Transport, TransportType,
     },
-    wallet::{ReceiveOptions, Wallet},
+    wallet::{ReceiveOptions, SendKind, SendOptions, Wallet},
 };
 use cdk_common::bitcoin::{
     Network,
@@ -61,6 +72,8 @@ struct Config {
     mint_url: String,
     pos_url: String,
     seed: PathBuf,
+    /// <state>/pos/: wallet DB, request DB, admin socket, saved sweep tokens.
+    dir: PathBuf,
 }
 
 fn dotenv(path: &Path) -> HashMap<String, String> {
@@ -93,12 +106,21 @@ fn config() -> Result<Config> {
         // SAFETY: called from main before the runtime starts.
         unsafe { std::env::set_var("SSL_CERT_FILE", ca) };
     }
+    let listen = get("ZEC_POS_ADDR").unwrap_or_else(|| format!("127.0.0.1:{}", network.port(8090)));
+    if network.is_mainnet() {
+        // Only Caddy (same host) may reach it, and the requests must advertise HTTPS URLs.
+        let addr: std::net::SocketAddr = listen.parse().with_context(|| format!("ZEC_POS_ADDR {listen} is not ip:port"))?;
+        ensure!(addr.ip().is_loopback(), "MAINNET: ZEC_POS_ADDR must be a loopback address (Caddy proxies /pos), not {listen}");
+        ensure!(mint_url.starts_with("https://"), "MAINNET: ZEC_MINT_URL must be the mint's public https:// URL, not {mint_url}");
+        ensure!(pos_url.starts_with("https://"), "MAINNET: ZEC_POS_URL must be the public https:// URL of /pos, not {pos_url}");
+    }
     Ok(Config {
         network,
-        listen: get("ZEC_POS_ADDR").unwrap_or_else(|| format!("127.0.0.1:{}", network.port(8090))),
+        listen,
         mint_url,
         pos_url,
         seed: network.state_dir().join("keys/pos-wallet.seed"),
+        dir: network.state_dir().join("pos"),
     })
 }
 
@@ -126,6 +148,14 @@ type Shared = Arc<Pos>;
 
 fn main() -> Result<()> {
     let cfg = config()?;
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let admin = match args.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
+        [] => None,
+        ["balance"] => Some("balance".to_owned()),
+        ["sweep"] => Some("send all".to_owned()),
+        ["sweep", zat] => Some(format!("send {}", zat.parse::<u64>().context("sweep takes a whole number of zat")?)),
+        _ => anyhow::bail!("usage: pos [balance | sweep [<zat>]]   (no argument: serve)"),
+    };
     if cfg.network.is_mainnet() {
         eprintln!("pos: *** MAINNET (real ZEC) *** mint {}", cfg.mint_url);
     }
@@ -135,23 +165,54 @@ fn main() -> Result<()> {
         "info,cdk=warn",
         cfg.network.is_mainnet().then_some("MAINNET "),
     )?;
-    tokio::runtime::Runtime::new()?.block_on(run(cfg))
+    let rt = tokio::runtime::Runtime::new()?;
+    match admin {
+        None => rt.block_on(run(cfg)),
+        Some(cmd) => rt.block_on(admin_command(cfg, &cmd)),
+    }
 }
 
-async fn run(cfg: Config) -> Result<()> {
+fn read_seed(cfg: &Config) -> Result<[u8; 64]> {
     ensure!(
         cfg.seed.exists(),
         "{} is missing; create the POS wallet once with `zec-ecash-cli --wallet pos init` (keys are never created implicitly)",
         cfg.seed.display()
     );
-    let seed: [u8; 64] = hex::decode(std::fs::read_to_string(&cfg.seed)?.trim())?
+    hex::decode(std::fs::read_to_string(&cfg.seed)?.trim())?
         .try_into()
-        .map_err(|_| anyhow!("seed must be 64 bytes"))?;
+        .map_err(|_| anyhow!("seed must be 64 bytes"))
+}
+
+/// Creates <state>/pos/ (mode 700) and moves an older layout's files into it (never deletes).
+fn prepare_dir(cfg: &Config) -> Result<()> {
+    if !cfg.dir.exists() {
+        let mut b = std::fs::DirBuilder::new();
+        #[cfg(unix)]
+        std::os::unix::fs::DirBuilderExt::mode(&mut b, 0o700);
+        b.recursive(true).create(&cfg.dir).with_context(|| format!("cannot create {}", cfg.dir.display()))?;
+    }
+    for f in ["pos-wallet.redb", "pos.sqlite"] {
+        let (old, new) = (cfg.network.state_dir().join(f), cfg.dir.join(f));
+        if old.exists() && !new.exists() {
+            std::fs::rename(&old, &new).with_context(|| format!("cannot move {} to {}", old.display(), new.display()))?;
+            eprintln!("pos: moved {} to {}", old.display(), new.display());
+        }
+    }
+    Ok(())
+}
+
+fn open_wallet(cfg: &Config, seed: [u8; 64]) -> Result<Wallet> {
+    let db = WalletRedbDatabase::new(&cfg.dir.join("pos-wallet.redb"))
+        .with_context(|| format!("cannot open {} (is the POS server running? use `pos sweep`, which asks it)", cfg.dir.join("pos-wallet.redb").display()))?;
+    Ok(Wallet::new(&cfg.mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, Some(0))?)
+}
+
+async fn run(cfg: Config) -> Result<()> {
+    let seed = read_seed(&cfg)?;
     let key = p2pk_key(&seed)?;
-    let dir = cfg.network.state_dir();
-    let db = WalletRedbDatabase::new(&dir.join("pos-wallet.redb"))?;
-    let wallet = Wallet::new(&cfg.mint_url, CurrencyUnit::custom(UNIT), Arc::new(db), seed, Some(0))?;
-    let conn = Connection::open(dir.join("pos.sqlite"))?;
+    prepare_dir(&cfg)?;
+    let wallet = open_wallet(&cfg, seed)?;
+    let conn = Connection::open(cfg.dir.join("pos.sqlite"))?;
     conn.execute_batch(
         "CREATE TABLE IF NOT EXISTS pos_quote (
              id         TEXT PRIMARY KEY,
@@ -167,7 +228,9 @@ async fn run(cfg: Config) -> Result<()> {
     let mint = MintUrl::from_str(&cfg.mint_url)?;
     let pos = Arc::new(Pos { wallet, key, mint, pos_url: cfg.pos_url.clone(), db: Mutex::new(conn) });
 
+    spawn_admin(&cfg, pos.clone()).await?;
     let app = Router::new()
+        .route("/health", get(health))
         .route("/create", get(create))
         .route("/check/{id}", get(check))
         .route("/payment", post(payment))
@@ -177,6 +240,107 @@ async fn run(cfg: Config) -> Result<()> {
     eprintln!("pos: {} (public {}), receiver key {}", cfg.listen, cfg.pos_url, pos.key.public_key());
     axum::serve(listener, app).await?;
     Ok(())
+}
+
+// ---- admin: balance and sweep over a Unix socket only the service user can open ----
+
+const SOCKET: &str = "admin.sock";
+
+/// Listens on <state>/pos/admin.sock: one line in ("balance" | "send all" | "send <zat>"),
+/// one line out ("ok <answer>" | "err <message>").
+async fn spawn_admin(cfg: &Config, pos: Shared) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let path = cfg.dir.join(SOCKET);
+    if path.exists() {
+        ensure!(
+            tokio::net::UnixStream::connect(&path).await.is_err(),
+            "another POS server is running ({} answers)",
+            path.display()
+        );
+        std::fs::remove_file(&path)?;
+    }
+    let listener = tokio::net::UnixListener::bind(&path).with_context(|| format!("cannot bind {}", path.display()))?;
+    #[cfg(unix)]
+    std::fs::set_permissions(&path, std::os::unix::fs::PermissionsExt::from_mode(0o600))?;
+    let sweeps = cfg.dir.join("sweeps");
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else { continue };
+            let (pos, sweeps) = (pos.clone(), sweeps.clone());
+            tokio::spawn(async move {
+                let (r, mut w) = stream.into_split();
+                let mut line = String::new();
+                if BufReader::new(r).read_line(&mut line).await.is_err() {
+                    return;
+                }
+                let answer = match admin(&pos.wallet, &sweeps, line.trim()).await {
+                    Ok(a) => format!("ok {a}\n"),
+                    Err(e) => format!("err {e:#}\n"),
+                };
+                let _ = w.write_all(answer.as_bytes()).await;
+            });
+        }
+    });
+    Ok(())
+}
+
+async fn admin(wallet: &Wallet, sweeps: &Path, cmd: &str) -> Result<String> {
+    let balance = u64::from(wallet.total_balance().await?);
+    match cmd.split_whitespace().collect::<Vec<_>>().as_slice() {
+        ["balance"] => Ok(balance.to_string()),
+        ["send", which] => {
+            let zat = if *which == "all" { balance } else { which.parse::<u64>().context("bad amount")? };
+            ensure!(zat > 0, "nothing to sweep: the POS wallet is empty");
+            ensure!(zat <= balance, "the POS wallet holds {balance} zat, less than {zat}");
+            let opts = SendOptions { send_kind: SendKind::OnlineExact, ..Default::default() };
+            let token = wallet.prepare_send(Amount::from(zat), opts).await?.confirm(None).await?.to_string();
+            // Saved before it is handed out, so a lost terminal never loses the takings.
+            let file = sweeps.join(format!("sweep-{}-{zat}zat.token", now()));
+            zec_network::write_secret(&file, &format!("{token}\n"))?;
+            tracing::info!(zat, file = %file.display(), "swept to a token");
+            Ok(format!("{zat} {} {token}", file.display()))
+        }
+        _ => anyhow::bail!("unknown admin command {cmd:?}"),
+    }
+}
+
+/// `pos balance` / `pos sweep`: ask the running server; if none, open the wallet directly.
+async fn admin_command(cfg: Config, cmd: &str) -> Result<()> {
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    let label = cfg.network.label();
+    let answer = match tokio::net::UnixStream::connect(cfg.dir.join(SOCKET)).await {
+        Ok(stream) => {
+            let (r, mut w) = stream.into_split();
+            w.write_all(format!("{cmd}\n").as_bytes()).await?;
+            let mut line = String::new();
+            BufReader::new(r).read_line(&mut line).await?;
+            match line.trim_end().split_once(' ') {
+                Some(("ok", a)) => a.to_owned(),
+                Some(("err", e)) => anyhow::bail!("{e}"),
+                _ => anyhow::bail!("unexpected answer from the POS server: {line:?}"),
+            }
+        }
+        Err(_) => {
+            eprintln!("pos: server not running; opening the wallet directly");
+            prepare_dir(&cfg)?;
+            let wallet = open_wallet(&cfg, read_seed(&cfg)?)?;
+            admin(&wallet, &cfg.dir.join("sweeps"), cmd).await?
+        }
+    };
+    if cmd == "balance" {
+        println!("{label}: the POS wallet holds {answer} zat");
+    } else {
+        let mut parts = answer.splitn(3, ' ');
+        let (zat, file, token) = (parts.next().unwrap_or("?"), parts.next().unwrap_or("?"), parts.next().unwrap_or(""));
+        eprintln!("{label}: swept {zat} zat into a token (also saved to {file}, mode 600).");
+        eprintln!("Redeem it in your own wallet (`zec-ecash-cli receive <token>`), then withdraw if you like; delete the file after.");
+        println!("{token}");
+    }
+    Ok(())
+}
+
+async fn health(State(pos): State<Shared>) -> Response {
+    Json(serde_json::json!({ "ok": true, "unit": UNIT, "mint": pos.mint.to_string() })).into_response()
 }
 
 fn now() -> u64 {

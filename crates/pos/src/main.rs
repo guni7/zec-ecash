@@ -1,4 +1,10 @@
-//! Point of sale over NUT-18 payment requests: the regtest devnet by default; ZEC_NETWORK=mainnet
+//! Point of sale over NUT-18 payment requests. The server never holds spendable money: each
+//! request is P2PK-locked to a fresh key from the payee's phone (`/create?pubkey=`), payments are
+//! checked and stored, and the phone collects them (src/locked.rs). Without a pubkey a request
+//! is a legacy one, locked to this POS's own key and redeemed into its wallet: devnet only;
+//! MAINNET refuses both creating and paying those, so nothing new lands in the POS wallet.
+//!
+//! Network: the regtest devnet by default; ZEC_NETWORK=mainnet
 //! for MAINNET (state in mainnet/, settings from mainnet/.env only, port 9090, every log line
 //! starts with MAINNET).
 //!
@@ -10,9 +16,10 @@
 //! - each request carries a NUT-10 P2PK lock to this POS's key, and payments must honour it;
 //! - only our mint URL is accepted.
 //!
-//!   GET  /create?amount=<zat>&unit=zat  -> {id, request: "creqA..."}  (single-use, HttpPost transport)
-//!   GET  /check/{id}                    -> {id, amount, received, state}
+//!   GET  /create?amount=<zat>&unit=zat&pubkey=<hex>  -> {id, request: "creqA..."} (single-use; nut10 P2PK = pubkey, used once)
+//!   GET  /check/{id}                    -> {id, amount, received, state, collected}
 //!   POST /payment                       <- PaymentRequestPayload (NUT-18)
+//!   GET  /requests/{id}/payment, POST /requests/{id}/ack, GET /keys/{pubkey}/requests (signed; src/locked.rs)
 //!   GET  /health                        -> {ok, unit, mint} (the web page's "is it up?")
 //!
 //! Listens on 127.0.0.1:8090 (MAINNET 127.0.0.1:9090, loopback only); the web server proxies
@@ -21,13 +28,15 @@
 //! Its wallet and request DB live in <state>/pos/ (an older <state>/pos-wallet.redb and
 //! pos.sqlite are moved there on start).
 //!
-//! Moving the takings out (the wallet only ever fills up):
+//! LEGACY: the POS wallet (requests created before locked payments). Moving its takings out:
 //!   pos balance           # what the POS wallet holds
 //!   pos sweep [<zat>]     # a token for all of it (or <zat>); also saved, mode 600, in
 //!                         # <state>/pos/sweeps/. Receive it in your own wallet, then withdraw.
 //! Both talk to the running server over <state>/pos/admin.sock (mode 600, in a mode-700
 //! directory), so the server keeps serving; with the server stopped they open the wallet directly.
 //! With the server stopped, `zec-ecash-cli --wallet pos withdraw <zat> <address>` works too.
+mod locked;
+
 use std::{
     collections::HashMap,
     path::{Path, PathBuf},
@@ -137,11 +146,13 @@ fn p2pk_key(seed: &[u8; 64]) -> Result<SecretKey> {
 }
 
 struct Pos {
+    /// Legacy requests' wallet; for locked ones only a mint client (keysets, NUT-07).
     wallet: Wallet,
     key: SecretKey,
     mint: MintUrl,
     pos_url: String,
     db: Mutex<Connection>,
+    mainnet: bool,
 }
 
 type Shared = Arc<Pos>;
@@ -221,12 +232,43 @@ async fn run(cfg: Config) -> Result<()> {
              state      TEXT NOT NULL CHECK (state IN ('UNPAID', 'PROCESSING', 'PAID')),
              created_at INTEGER NOT NULL
          );
-         -- a crash mid-redeem leaves PROCESSING; the proofs are either redeemed or not, so the
+         -- Proofs accepted for a locked request, by Y (hash_to_curve of the secret): never twice.
+         -- Locked payments that lost the race or came after PAID, kept for the payee.
+         CREATE TABLE IF NOT EXISTS pos_extra (
+             quote_id     TEXT NOT NULL,
+             n            INTEGER NOT NULL,
+             received     INTEGER NOT NULL,
+             token        TEXT,
+             proofs       TEXT,
+             paid_at      INTEGER NOT NULL,
+             collected_at INTEGER,
+             PRIMARY KEY (quote_id, n)
+         );
+         CREATE TABLE IF NOT EXISTS pos_proof (
+             y        TEXT PRIMARY KEY,
+             quote_id TEXT NOT NULL
+         );",
+    )?;
+    // Extra/partial payments: which kind (added after the table first shipped).
+    let has_kind: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('pos_extra') WHERE name = 'kind'", [], |r| r.get::<_, i64>(0))? > 0;
+    if !has_kind {
+        conn.execute_batch("ALTER TABLE pos_extra ADD COLUMN kind TEXT NOT NULL DEFAULT 'extra';")?;
+    }
+    // Locked requests: the payee's key, and the stored payment until the payee collects it.
+    for (col, ty) in [("pubkey", "TEXT"), ("token", "TEXT"), ("proofs", "TEXT"), ("paid_at", "INTEGER"), ("collected_at", "INTEGER")] {
+        let has: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('pos_quote') WHERE name = ?1", [col], |r| r.get::<_, i64>(0))? > 0;
+        if !has {
+            conn.execute_batch(&format!("ALTER TABLE pos_quote ADD COLUMN {col} {ty};"))?;
+        }
+    }
+    conn.execute_batch(
+        "CREATE UNIQUE INDEX IF NOT EXISTS pos_quote_pubkey ON pos_quote(pubkey) WHERE pubkey IS NOT NULL;
+         -- a crash mid-payment leaves PROCESSING; nothing was claimed or stored yet, so the
          -- payer can retry: go back to UNPAID on start.
          UPDATE pos_quote SET state = 'UNPAID' WHERE state = 'PROCESSING';",
     )?;
     let mint = MintUrl::from_str(&cfg.mint_url)?;
-    let pos = Arc::new(Pos { wallet, key, mint, pos_url: cfg.pos_url.clone(), db: Mutex::new(conn) });
+    let pos = Arc::new(Pos { wallet, key, mint, pos_url: cfg.pos_url.clone(), db: Mutex::new(conn), mainnet: cfg.network.is_mainnet() });
 
     spawn_admin(&cfg, pos.clone()).await?;
     let app = Router::new()
@@ -234,6 +276,9 @@ async fn run(cfg: Config) -> Result<()> {
         .route("/create", get(create))
         .route("/check/{id}", get(check))
         .route("/payment", post(payment))
+        .route("/requests/{id}/payment", get(locked::collect))
+        .route("/requests/{id}/ack", post(locked::ack))
+        .route("/keys/{pubkey}/requests", get(locked::lookup))
         .with_state(pos.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await.with_context(|| format!("cannot bind {}", cfg.listen))?;
     tracing::info!(listen = %cfg.listen, public = %cfg.pos_url, mint = %cfg.mint_url, pubkey = %pos.key.public_key(), "POS serving");
@@ -357,6 +402,8 @@ fn err(status: StatusCode, msg: impl Into<String>) -> Response {
 struct CreateQuery {
     amount: u64,
     unit: Option<String>,
+    /// The payee's fresh per-request key (hex, compressed). Required on MAINNET.
+    pubkey: Option<String>,
 }
 
 async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Response {
@@ -366,6 +413,14 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
     if q.amount == 0 {
         return err(StatusCode::BAD_REQUEST, "amount must be > 0");
     }
+    let payee = match q.pubkey.as_deref().map(PublicKey::from_hex) {
+        Some(Ok(k)) => Some(k),
+        Some(Err(_)) => return err(StatusCode::BAD_REQUEST, "pubkey is not a compressed secp256k1 public key (hex)"),
+        None if pos.mainnet => {
+            return err(StatusCode::BAD_REQUEST, "a request needs the payee's pubkey (locked payments only on MAINNET); update the wallet");
+        }
+        None => None,
+    };
     let mut raw = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     let id = hex::encode(raw);
@@ -380,15 +435,23 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
             target: format!("{}/payment", pos.pos_url),
             tags: vec![],
         })
-        // Payers must lock the proofs to this POS's key (NUT-10/11 P2PK).
-        .nut10(Nut10SecretRequest::new(Kind::P2PK, pos.key.public_key().to_hex(), None::<Vec<Vec<String>>>))
+        // Payers must lock the proofs (NUT-10/11 P2PK) to the payee's key; legacy: to this POS's.
+        .nut10(Nut10SecretRequest::new(
+            Kind::P2PK,
+            payee.map(|k| k.to_hex()).unwrap_or_else(|| pos.key.public_key().to_hex()),
+            None::<Vec<Vec<String>>>,
+        ))
         .build();
     let res = pos.db.lock().unwrap().execute(
-        "INSERT INTO pos_quote (id, amount, state, created_at) VALUES (?1, ?2, 'UNPAID', ?3)",
-        params![id, q.amount as i64, now() as i64],
+        "INSERT INTO pos_quote (id, amount, state, created_at, pubkey) VALUES (?1, ?2, 'UNPAID', ?3, ?4)",
+        params![id, q.amount as i64, now() as i64, payee.map(|k| k.to_hex())],
     );
-    if let Err(e) = res {
-        return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}"));
+    match res {
+        Ok(_) => {}
+        Err(rusqlite::Error::SqliteFailure(f, _)) if f.code == rusqlite::ErrorCode::ConstraintViolation => {
+            return err(StatusCode::CONFLICT, "this key was already used for a request; derive a fresh one");
+        }
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
     }
     tracing::info!(%id, amount = q.amount, "payment request created");
     Json(serde_json::json!({ "id": id, "request": request.to_string() })).into_response()
@@ -400,15 +463,18 @@ struct QuoteView {
     amount: u64,
     received: u64,
     state: String,
+    /// Locked requests: the payee has collected the payment (the server's copy is deleted).
+    collected: bool,
 }
 
 fn load_quote(conn: &Connection, id: &str) -> rusqlite::Result<Option<QuoteView>> {
-    conn.query_row("SELECT id, amount, received, state FROM pos_quote WHERE id = ?1", [id], |r| {
+    conn.query_row("SELECT id, amount, received, state, collected_at FROM pos_quote WHERE id = ?1", [id], |r| {
         Ok(QuoteView {
             id: r.get(0)?,
             amount: r.get::<_, i64>(1)? as u64,
             received: r.get::<_, i64>(2)? as u64,
             state: r.get(3)?,
+            collected: r.get::<_, Option<i64>>(4)?.is_some(),
         })
     })
     .optional()
@@ -461,6 +527,20 @@ async fn payment(State(pos): State<Shared>, Json(p): Json<PaymentRequestPayload>
         Ok(None) => return err(StatusCode::NOT_FOUND, "unknown payment request"),
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
     };
+    let payee: Option<String> = match pos.db.lock().unwrap().query_row("SELECT pubkey FROM pos_quote WHERE id = ?1", [&id], |r| r.get(0)) {
+        Ok(k) => k,
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
+    };
+    // Locked requests: a late or losing payment becomes an extra payment (src/locked.rs).
+    match payee.as_deref().map(PublicKey::from_hex) {
+        Some(Ok(key)) => return locked::pay(&pos, &id, quote.amount, &key, p).await,
+        Some(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("stored key: {e}")),
+        None if pos.mainnet => {
+            return err(StatusCode::GONE, "this is a legacy request (paid into the POS's own wallet), not accepted on MAINNET; ask for a new one");
+        }
+        None => {}
+    }
+    // LEGACY (devnet): redeem into the POS wallet.
     if quote.state != "UNPAID" {
         return err(StatusCode::CONFLICT, format!("request is already {}", quote.state));
     }

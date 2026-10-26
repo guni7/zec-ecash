@@ -140,17 +140,17 @@ DLEQ proofs, because the receiver needs them to accept the token offline.
 nobody else *can* spend it. So a token is accepted offline only if every proof is P2PK-locked to
 the receiver's key (no refund/locktime/multisig escape hatch) and every proof's DLEQ proof checks
 out against mint keys cached while online. `check <token>` does this in the CLI; the web page
-shows its own key as a QR ("Receive offline"), and when it scans a token with no network it
-runs the same checks, shows "accepted offline, will redeem when online", and redeems the token
+shows its own key as a QR (Receive › Show my code, when offline or with no amount), and when it
+scans a token with no network it runs the same checks, shows "Received offline", and redeems the token
 automatically (signing with its key) once the mint is reachable. Compact tokens and unlocked
 tokens are refused offline, with the reason.
 
 **Point of sale (NUT-18), locked to the payee's phone.** `crates/pos` (port of
 thesimplekid/cashu-payment-backend, see its header for the fixes) runs on 127.0.0.1:8090,
-proxied as `https://<host>:5173/pos`; `devnet-up.sh` starts it. The page's Request page asks it
+proxied as `https://<host>:5173/pos`; `devnet-up.sh` starts it. The page's Receive › Show my code asks it
 for a request locked to a fresh P2PK key derived from the phone's wallet seed (one key per
-request, never reused). The payer's wallet (`zec-ecash-cli pay <creqA>`, or the page's Send >
-Pay a request) locks every proof to exactly that key, with DLEQ proofs and no locktime or refund
+request, never reused). The payer's wallet (`zec-ecash-cli pay <creqA>`, or the page: scan the
+code, then Pay) locks every proof to exactly that key, with DLEQ proofs and no locktime or refund
 keys. The server checks the payment without claiming anything (mint, unit, the exact lock,
 DLEQ, NUT-07 unspent, no proof accepted twice), stores it and marks the request PAID. It never
 refuses a payment only the payee can spend: one that loses a race or arrives after PAID is kept

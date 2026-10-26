@@ -26,6 +26,41 @@
       </section>
 
       <section class="card">
+        <h2>Deposit ZEC</h2>
+        <p class="muted">Get an address for an exact amount, pay it from any Zcash wallet, and the ecash is
+          minted here once the payment confirms. Open deposits survive a reload.</p>
+        <div class="row">
+          <input id="dep-amount" type="number" inputmode="numeric" min="1" step="1" placeholder="Amount" />
+          <span class="unit">zat</span>
+          <button id="dep-btn" type="button" class="primary">Get address</button>
+        </div>
+        <p id="dep-limits" class="muted"></p>
+        <div id="deposits" class="items"></div>
+      </section>
+
+      <section class="card">
+        <h2>Withdraw ZEC</h2>
+        <textarea id="wd-address" rows="2" placeholder="Zcash address or zcash: payment URI" spellcheck="false"></textarea>
+        <div class="row">
+          <button id="wd-scan" type="button">Scan QR</button>
+          <input id="wd-amount" type="number" inputmode="numeric" min="1" step="1" placeholder="Amount" />
+          <span class="unit">zat</span>
+          <button id="wd-btn" type="button" class="primary">Get quote</button>
+        </div>
+        <p id="wd-limits" class="muted"></p>
+        <div id="wd-quote" class="confirm" hidden>
+          <p id="wd-summary"></p>
+          <label id="wd-ack-row" class="check" hidden><input id="wd-ack" type="checkbox" />
+            This sends real ZEC on mainnet. It can't be undone.</label>
+          <div class="row">
+            <button id="wd-confirm" type="button" class="primary">Send ZEC</button>
+            <button id="wd-cancel" type="button">Cancel</button>
+          </div>
+        </div>
+        <div id="withdrawals" class="items"></div>
+      </section>
+
+      <section class="card">
         <h2>Receive offline</h2>
         <p class="muted">Show this key to the sender. A token locked to it (with its mint signatures
           included) can be accepted with no network and is redeemed automatically once you're back online.</p>

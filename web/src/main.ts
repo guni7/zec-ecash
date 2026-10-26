@@ -16,6 +16,7 @@ import {
 import QRCode from 'qrcode';
 import QrScanner from 'qr-scanner';
 import { loadOrCreateKey, loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
+import { initOnchain } from './onchain';
 
 declare const __ZEC_NETWORK__: 'regtest' | 'mainnet';
 declare const __ZEC_MINT_URL__: string;
@@ -188,7 +189,7 @@ async function checkMint() {
   try {
     const res = await fetch(`${MINT_URL}/v1/info`);
     if (!res.ok) throw new Error(`HTTP ${res.status}`);
-    const info = (await res.json()) as { name?: string; nuts?: Record<string, { methods?: Array<{ unit: string }> }> };
+    const info = (await res.json()) as { name?: string; nuts?: Record<string, { methods?: Array<{ method: string; unit: string }> }> };
     const units = new Set((info.nuts?.['4']?.methods ?? []).map((m) => m.unit));
     els.mintStatus.className = 'dot ok';
     els.mintLine.textContent = `${info.name ?? 'mint'} · ${MINT_URL}` + (units.has(UNIT) ? '' : ` · no ${UNIT} unit!`);
@@ -196,6 +197,8 @@ async function checkMint() {
       say(`Opened via ${location.hostname}: tokens will name ${MINT_URL}, which the phone and CLI don't use. Open the LAN address instead.`, 'bad');
     }
     await connect();
+    onchain.setInfo(info);
+    void onchain.resume(); // open deposits and withdrawals, saved across reloads
     await redeemPending();
   } catch (e) {
     els.mintStatus.className = 'dot bad';
@@ -356,21 +359,25 @@ async function createRequest(amountText: string) {
 // ---- camera ----
 
 let scanner: QrScanner | null = null;
+/** What the current scan is for (a token to receive, or a withdrawal address). */
+let onScan: (text: string) => void = () => {};
 
-async function startScan() {
+/** Opens the camera (in the Receive card) and hands the first QR code read to `onResult`. */
+async function startScan(prompt: string, onResult: (text: string) => void) {
+  onScan = onResult;
   els.scanner.hidden = false;
+  els.scanner.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
   scanner ??= new QrScanner(
     els.scannerVideo,
     (result) => {
       stopScan();
-      els.receiveInput.value = result.data;
-      void busy(els.receiveBtn, () => receive(result.data));
+      onScan(result.data);
     },
     { preferredCamera: 'environment', highlightScanRegion: true, returnDetailedScanResult: true },
   );
   try {
     await scanner.start();
-    say('Point the camera at a token QR code.');
+    say(prompt);
   } catch (e) {
     stopScan();
     say(`Camera unavailable: ${e instanceof Error ? e.message : e}. (Needs HTTPS and camera permission.)`, 'bad');
@@ -382,10 +389,34 @@ function stopScan() {
   els.scanner.hidden = true;
 }
 
+// ---- deposit and withdraw (ZEC on chain) ----
+
+const onchain = initOnchain({
+  mintUrl: MINT_URL,
+  unit: UNIT,
+  mainnet: MAINNET,
+  connect,
+  proofs: () => proofs,
+  setProofs: (next) => {
+    proofs = next;
+    saveProofs(proofs);
+    renderBalance();
+  },
+  say,
+  explain,
+  isNetworkError,
+  busy,
+  scan: (prompt, onResult) => void startScan(prompt, onResult),
+});
+
 // ---- wiring ----
 
 els.receiveBtn.onclick = () => void busy(els.receiveBtn, () => receive(els.receiveInput.value));
-els.scanBtn.onclick = () => void startScan();
+els.scanBtn.onclick = () =>
+  void startScan('Point the camera at a token QR code.', (text) => {
+    els.receiveInput.value = text;
+    void busy(els.receiveBtn, () => receive(text));
+  });
 els.scanStop.onclick = () => stopScan();
 els.sendBtn.onclick = () => void busy(els.sendBtn, () => send(els.sendAmount.value));
 els.reqBtn.onclick = () => void busy(els.reqBtn, () => createRequest(els.reqAmount.value));

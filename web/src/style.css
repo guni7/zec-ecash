@@ -102,3 +102,17 @@ button:disabled { opacity: 0.55; cursor: progress; }
 .check input { width: auto; }
 #my-pubkey-qr { display: block; margin: 8px auto; background: #fff; padding: 8px; border-radius: 8px; max-width: 100%; height: auto; }
 #pending { margin-top: 4px; }
+.items { margin-top: 6px; }
+.item { border-top: 1px solid var(--border); padding: 12px 0 4px; }
+.item-head { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
+.item .state { font-size: 14px; font-weight: 600; }
+.item .state.ok { color: var(--ok); }
+.item .state.bad { color: var(--bad); }
+.item canvas { display: block; margin: 10px auto; max-width: 100%; height: auto; background: #fff; padding: 8px; border-radius: 8px; }
+.item .addr, .item .txid { word-break: break-all; }
+.item button.small { padding: 4px 10px; font-size: 13px; margin-top: 6px; }
+.confirm { border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; margin-top: 10px; }
+.confirm p { margin: 0 0 6px; font-size: 14px; }
+body.mainnet .confirm { border-color: var(--bad); }
+body.mainnet #wd-confirm { background: var(--bad); border-color: var(--bad); color: #fff; }
+#dep-limits:empty, #wd-limits:empty { display: none; }

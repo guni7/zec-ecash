@@ -57,6 +57,22 @@ impl FrostSigner {
         }
     }
 
+    /// Asks every guardian for `/status` once (for `/reserves`): up, and answering as the
+    /// guardian at its position with this reserve's group key.
+    pub async fn probe(&self, now: u64) -> Vec<crate::reserves::GuardianHealth> {
+        let group_key = self.group_key().map(hex::encode).unwrap_or_default();
+        let mut out = Vec::with_capacity(self.guardians.len());
+        for (i, g) in self.guardians.iter().enumerate() {
+            let got = g.client.get_json::<zec_frost::wire::Status>(&format!("{}/status", g.url), Duration::from_secs(3)).await;
+            let (up, key_ok) = match &got {
+                Ok(s) => (true, usize::from(s.guardian) == i + 1 && s.group_key == group_key),
+                Err(_) => (false, false),
+            };
+            out.push(crate::reserves::GuardianHealth { id: i + 1, up, key_ok, last_seen: up.then_some(now) });
+        }
+        out
+    }
+
     fn identifier(&self, guardian: u16) -> Result<Identifier> {
         let id = Identifier::try_from(guardian).map_err(|e| anyhow!("bad guardian id {guardian}: {e}"))?;
         ensure!(self.pubkeys.verifying_shares().contains_key(&id), "guardian {guardian} is not in the group");

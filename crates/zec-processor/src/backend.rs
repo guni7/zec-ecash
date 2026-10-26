@@ -167,6 +167,12 @@ impl ZecBackend {
         })
     }
 
+    /// A deposit quote's progress (served at `/deposit-quote?quote=<id>`): what has arrived, at
+    /// what depth, against the depth it needs.
+    pub fn deposit_progress(&self, quote_id: &str) -> anyhow::Result<Option<(Quote, u32)>> {
+        Ok(self.store.quote(quote_id)?.map(|q| (q, self.cfg.min_confirmations)))
+    }
+
     /// Whether a deposit quote for `zats` would be accepted now (served at `/deposit-quote`).
     pub async fn check_deposit(&self, zats: u64) -> Result<(), DepositRefusal> {
         let mut wallet = self.wallet.lock().await;

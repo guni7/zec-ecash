@@ -338,6 +338,9 @@ Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two g
 - A withdrawal flagged `operator_action_required` (reported PAID, then reorged out and expired):
   pay the recipient by other means, then
   `cd ~/zec-ecash && ZEC_NETWORK=mainnet ./target/release/zec-processor resolve <quote_id>`.
+  `/reserves` is public, so it lists only the quote id, amount and time flagged; the address,
+  txid and reason are in `processor.log` (the CRITICAL line) and in
+  `ZEC_NETWORK=mainnet ./target/release/zec-processor operator-actions`.
 - Updating: rebuild on the main host, `sudo install` the new guardian binary on each guardian box,
   `sudo systemctl restart zec-guardian@N zec-processor zec-mintd`.
 - Rotating a guardian's auth secret: `make-auth-key` refuses to overwrite, so move the old

@@ -143,6 +143,8 @@ pub struct ReserveStatus {
     /// Unix seconds.
     pub checked_at: u64,
     /// Withdrawals the processor gave up on; a person must act (see `zec-processor resolve`).
+    /// Public, so no address, txid or reason: those are in the processor log (CRITICAL) and in
+    /// `zec-processor operator-actions` on the mint host.
     pub operator_action: Vec<OperatorAction>,
 }
 
@@ -150,9 +152,8 @@ pub struct ReserveStatus {
 pub struct OperatorAction {
     pub quote_id: String,
     pub amount_zats: u64,
-    pub address: String,
-    pub txid: Option<String>,
-    pub reason: String,
+    /// Unix seconds the row was flagged.
+    pub flagged_at: u64,
 }
 
 /// Rows flagged in the store, for [`ReserveStatus::operator_action`].
@@ -160,13 +161,7 @@ pub fn operator_actions(store: &QuoteStore) -> Result<Vec<OperatorAction>> {
     Ok(store
         .needing_operator_action()?
         .into_iter()
-        .map(|w| OperatorAction {
-            quote_id: w.quote_id,
-            amount_zats: w.amount_zats,
-            address: w.address,
-            txid: w.txid,
-            reason: w.operator_action.unwrap_or_default(),
-        })
+        .map(|w| OperatorAction { quote_id: w.quote_id, amount_zats: w.amount_zats, flagged_at: w.updated_at })
         .collect())
 }
 
@@ -201,6 +196,19 @@ pub struct ReserveMonitor {
     inner: Arc<RwLock<Monitor>>,
 }
 
+/// Whether one guardian answered its last `/status` probe (public in `/reserves`: no URL, no
+/// error text, so nothing about where the guardians are).
+#[derive(Clone, Debug, Serialize)]
+pub struct GuardianHealth {
+    /// The guardian's position in ZEC_GUARDIANS (= its FROST id).
+    pub id: usize,
+    pub up: bool,
+    /// It answered as the right guardian id with the group key the reserve uses.
+    pub key_ok: bool,
+    /// Unix seconds of the last answer, if it ever answered.
+    pub last_seen: Option<u64>,
+}
+
 #[derive(Default)]
 struct Monitor {
     last: Option<ReserveStatus>,
@@ -208,6 +216,8 @@ struct Monitor {
     error: Option<String>,
     /// When a violation was last logged (unix seconds), to repeat it once a minute, not every pass.
     last_alarm: u64,
+    guardians: Vec<GuardianHealth>,
+    guardians_checked_at: Option<u64>,
 }
 
 /// How often a continuing violation is logged again.
@@ -249,6 +259,18 @@ impl ReserveMonitor {
         m.error = Some(error);
     }
 
+    /// Stores the latest guardian probe (keeps each guardian's last_seen across failed probes).
+    pub async fn record_guardians(&self, mut probe: Vec<GuardianHealth>, checked_at: u64) {
+        let mut m = self.inner.write().await;
+        for g in &mut probe {
+            if g.last_seen.is_none() {
+                g.last_seen = m.guardians.iter().find(|o| o.id == g.id).and_then(|o| o.last_seen);
+            }
+        }
+        m.guardians = probe;
+        m.guardians_checked_at = Some(checked_at);
+    }
+
     /// `Some(status)` if the last completed check failed. A check that could not run does not
     /// block quotes (the last completed result still applies).
     pub async fn violation(&self) -> Option<ReserveStatus> {
@@ -265,6 +287,9 @@ struct Body {
     status: Option<ReserveStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    guardians: Vec<GuardianHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guardians_checked_at: Option<u64>,
 }
 
 impl ReserveMonitor {
@@ -278,7 +303,13 @@ impl ReserveMonitor {
             None => "unknown",
         };
         let code = if state == "ok" { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-        let body = Body { state, status: m.last.clone(), error: m.error.clone() };
+        let body = Body {
+            state,
+            status: m.last.clone(),
+            error: m.error.clone(),
+            guardians: m.guardians.clone(),
+            guardians_checked_at: m.guardians_checked_at,
+        };
         (code, Json(serde_json::to_value(body).unwrap_or_default()))
     }
 }
@@ -286,6 +317,20 @@ impl ReserveMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn public_report_has_no_withdrawal_details() {
+        let monitor = ReserveMonitor::default();
+        let mut status = evaluate(100, MintLedger::default(), 0, 10, 1, 1_000);
+        status.operator_action = vec![OperatorAction { quote_id: "q1".into(), amount_zats: 5_000, flagged_at: 999 }];
+        monitor.record(status).await;
+        let (_, axum::Json(v)) = monitor.report().await;
+        assert_eq!(v["state"], "operator_action_required");
+        let a = &v["operator_action"][0];
+        assert_eq!((a["quote_id"].as_str(), a["amount_zats"].as_u64(), a["flagged_at"].as_u64()), (Some("q1"), Some(5_000), Some(999)));
+        let text = v.to_string();
+        assert!(!text.contains("address") && !text.contains("txid") && !text.contains("reason"), "{text}");
+    }
     use crate::{
         store::MinedAt,
         withdraw::{BuiltTx, Reserve, make_payment},

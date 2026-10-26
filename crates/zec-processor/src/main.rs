@@ -6,6 +6,8 @@
 //! FROST guardians; the processor's wallet is view-only and it holds no key share.
 //! Configure with ZEC_* variables or `.env` (see config.rs), then:
 //!   cargo run -p zec-processor -- make-ufvk   # once, after the DKG: writes devnet/keys/mint.ufvk
+//!   cargo run -p zec-processor -- operator-actions   # flagged withdrawals, with address, txid
+//!                                                     # and reason (/reserves shows only id + amount)
 //!   cargo run -p zec-processor -- resolve <quote_id>   # clear an operator-action flag once a
 //!                                                       # person has dealt with it (see /reserves)
 //!   cargo run -p zec-processor
@@ -44,6 +46,30 @@ async fn main() -> anyhow::Result<()> {
     let cfg = config::Config::load()?;
     if std::env::args().nth(1).as_deref() == Some("make-ufvk") {
         return make_ufvk(&cfg);
+    }
+    if std::env::args().nth(1).as_deref() == Some("operator-actions") {
+        let store = store::QuoteStore::open(&cfg.processor_db)?;
+        let rows = store.needing_operator_action()?;
+        if rows.is_empty() {
+            println!("{}: no withdrawals need an operator", cfg.network.label());
+        }
+        for w in &rows {
+            println!(
+                "{}: withdrawal {} flagged at {} (unix)\n  {} zat (+{} fee) to {}\n  txid {}\n  {}",
+                cfg.network.label(),
+                w.quote_id,
+                w.updated_at,
+                w.amount_zats,
+                w.fee_zats,
+                w.address,
+                w.txid.as_deref().unwrap_or("none"),
+                w.operator_action.as_deref().unwrap_or("")
+            );
+        }
+        if !rows.is_empty() {
+            println!("After paying the recipient by other means: zec-processor resolve <quote_id>");
+        }
+        return Ok(());
     }
     if std::env::args().nth(1).as_deref() == Some("resolve") {
         let quote_id = std::env::args().nth(2).context("usage: zec-processor resolve <quote_id>")?;
@@ -93,8 +119,19 @@ async fn main() -> anyhow::Result<()> {
     tokio::task::spawn_blocking(zec_wallet::warm_proving_key).await??;
     tracing::info!(elapsed = ?started.elapsed(), "Orchard proving key ready");
 
+    let probe_signer = signer.clone();
     let backend = Arc::new(backend::ZecBackend::new(cfg.clone(), store, wallet, signer));
     backend.start().await?;
+    // Guardian health for `/reserves` (the status page): every 20 s.
+    let guardian_monitor = backend.reserve_monitor();
+    tokio::spawn(async move {
+        loop {
+            let now = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+            let probe = probe_signer.probe(now).await;
+            guardian_monitor.record_guardians(probe, now).await;
+            tokio::time::sleep(std::time::Duration::from_secs(20)).await;
+        }
+    });
     let (monitor, status_backend) = (backend.reserve_monitor(), backend.clone());
     tokio::spawn(async move {
         if let Err(e) = status::serve(cfg.status_addr, monitor, status_backend).await {

@@ -2,6 +2,9 @@
 //! - `GET /reserves`: the reserve check (see `reserves`).
 //! - `GET /deposit-quote?amount=<zat>`: whether a deposit quote would be accepted (limits, the
 //!   reserve check, the ZEC_MAX_RESERVE cap), and if not, why.
+//! - `GET /deposit-quote?quote=<id>`: an open deposit's progress (zat received, confirmations
+//!   so far and needed), for a wallet's confirmation bar. Quote ids are unguessable.
+//!   `/reserves` also lists whether each guardian answers (`guardians`; no addresses).
 //! - `GET /withdrawal-quote?amount=<zat>&address=<ua>`: whether a withdrawal can be quoted, and
 //!   if not, why. cdk-mintd 0.18.2 reports every failed `zec` melt quote to the wallet as "Unit
 //!   unsupported" (and its gRPC server drops our message before that), so wallets ask here.
@@ -42,15 +45,40 @@ struct QuoteQuery {
 
 #[derive(Deserialize)]
 struct DepositQuery {
-    amount: u64,
+    amount: Option<u64>,
+    quote: Option<String>,
 }
 
-/// 200 `{"ok":true,"amount"}`, or 422 `{"ok":false,"code","error",...}`.
+/// `?amount=`: 200 `{"ok":true,"amount"}`, or 422 `{"ok":false,"code","error",...}`.
+/// `?quote=`: 200 with the quote's progress, or 404.
 async fn deposit_quote(State(s): State<AppState>, Query(q): Query<DepositQuery>) -> impl IntoResponse {
-    match s.backend.check_deposit(q.amount).await {
-        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true, "amount": q.amount }))),
+    if let Some(id) = q.quote.as_deref() {
+        return match s.backend.deposit_progress(id.trim()) {
+            Ok(Some((quote, required))) => (StatusCode::OK, Json(progress_json(&quote, required))),
+            Ok(None) => (StatusCode::NOT_FOUND, Json(json!({ "ok": false, "code": "unknown_quote", "error": "no such deposit quote" }))),
+            Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "ok": false, "code": "check_failed", "error": format!("{e:#}") }))),
+        };
+    }
+    let Some(amount) = q.amount else {
+        return (StatusCode::BAD_REQUEST, Json(json!({ "ok": false, "code": "bad_request", "error": "pass amount=<zat> or quote=<id>" })));
+    };
+    match s.backend.check_deposit(amount).await {
+        Ok(()) => (StatusCode::OK, Json(json!({ "ok": true, "amount": amount }))),
         Err(r) => (StatusCode::UNPROCESSABLE_ENTITY, Json(deposit_refusal_json(&r))),
     }
+}
+
+fn progress_json(q: &crate::store::Quote, required: u32) -> serde_json::Value {
+    json!({
+        "ok": true,
+        "quote": q.quote_id,
+        "amount": q.amount_zats,
+        "received_zats": q.received_zats,
+        "confirmations": q.confirmations,
+        "required_confirmations": required,
+        "paid": q.paid_emitted,
+        "expires_at": q.expires_at,
+    })
 }
 
 fn deposit_refusal_json(r: &DepositRefusal) -> serde_json::Value {
@@ -99,6 +127,24 @@ pub async fn serve(addr: SocketAddr, monitor: ReserveMonitor, backend: Arc<ZecBa
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_json_reports_depth() {
+        let q = crate::store::Quote {
+            quote_id: "q1".into(),
+            diversifier_index: 7,
+            address: "uregtest1x".into(),
+            amount_zats: 50_000,
+            received_zats: 50_000,
+            confirmations: 3,
+            paid_emitted: false,
+            expires_at: 1_800_000_000,
+        };
+        let v = progress_json(&q, 10);
+        assert_eq!((v["confirmations"].as_u64(), v["required_confirmations"].as_u64()), (Some(3), Some(10)));
+        assert_eq!(v["received_zats"], 50_000);
+        assert!(v.get("address").is_none() && v.get("diversifier_index").is_none());
+    }
 
     #[test]
     fn refusal_json_carries_code_and_numbers() {

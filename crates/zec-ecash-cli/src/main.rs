@@ -434,15 +434,14 @@ async fn reserves(mint_url: &str) -> Result<()> {
     let actions = v["operator_action"].as_array().cloned().unwrap_or_default();
     for a in &actions {
         println!(
-            "OPERATOR ACTION NEEDED: withdrawal {} ({} zat to {}): {}",
+            "OPERATOR ACTION NEEDED: withdrawal {} ({} zat), flagged at {} (unix)",
             a["quote_id"].as_str().unwrap_or("?"),
             a["amount_zats"].as_u64().unwrap_or(0),
-            a["address"].as_str().unwrap_or("?"),
-            a["reason"].as_str().unwrap_or("?")
+            a["flagged_at"].as_u64().unwrap_or(0)
         );
     }
     if !actions.is_empty() {
-        println!("(after dealing with one: zec-processor resolve <quote_id>)");
+        println!("(details, incl. the address: `zec-processor operator-actions` on the mint host; then `zec-processor resolve <quote_id>`)");
     }
     if state == "ok" || state == "operator_action_required" {
         println!("surplus                  {:>14} zat", n("reserve_zats") - n("required_zats"));

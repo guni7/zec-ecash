@@ -137,16 +137,18 @@ pub struct Paid {
     pub target: String,
     pub status: i32,
     pub body: String,
-    /// The proofs as a token, so a refused payment can be recovered after the refund locktime.
+    /// The proofs as a token (P2PK-locked when the request asked for it).
     pub token: String,
-    pub refund_at: Option<u64>,
+    /// The key the proofs are locked to, if any: only its holder can redeem them.
+    pub locked_to: Option<PublicKey>,
 }
 
 /// Pays a NUT-18 payment request (creqA...) over its HTTP POST transport. If the request asks
-/// for a P2PK lock (nut10), the proofs are locked to that key with a refund path back to this
-/// wallet after `refund_after` seconds, so a refused payment isn't lost.
-pub async fn pay(wallet: &Wallet, seed: &[u8; 64], request: &str, amount: Option<u64>, refund_after: u64) -> Result<Paid> {
-    use cdk::nuts::{Conditions, Kind, PaymentRequest, PaymentRequestPayload, SigFlag, TransportType};
+/// for a P2PK lock (nut10), every proof is locked to exactly that key, with DLEQ proofs and no
+/// locktime, refund keys or other conditions (what a zec-ecash POS accepts: the payee's phone
+/// collects the payment later). A refused locked payment can then be redeemed only by the payee.
+pub async fn pay(wallet: &Wallet, request: &str, amount: Option<u64>) -> Result<Paid> {
+    use cdk::nuts::{Kind, PaymentRequest, PaymentRequestPayload, TransportType};
     let req = PaymentRequest::from_str(request.trim()).map_err(|e| anyhow!("not a NUT-18 payment request: {e}"))?;
     if let Some(u) = &req.unit
         && *u != CurrencyUnit::custom(crate::UNIT)
@@ -164,25 +166,17 @@ pub async fn pay(wallet: &Wallet, seed: &[u8; 64], request: &str, amount: Option
         .map(|t| t.target.clone())
         .context("the request has no HTTP POST transport")?;
 
-    let mut refund_at = None;
-    let conditions = match &req.nut10 {
+    let locked_to = match &req.nut10 {
         Some(n) if n.kind == Kind::P2PK => {
-            let to = PublicKey::from_str(&n.data).map_err(|e| anyhow!("request's P2PK key is invalid: {e}"))?;
-            let at = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH)?.as_secs() + refund_after;
-            refund_at = Some(at);
-            let refund = Conditions {
-                locktime: Some(at),
-                pubkeys: None,
-                refund_keys: Some(vec![p2pk_key(seed)?.public_key()]),
-                num_sigs: None,
-                sig_flag: SigFlag::SigInputs,
-                num_sigs_refund: None,
-            };
-            Some(SpendingConditions::new_p2pk(to, Some(refund)))
+            if n.tags.as_ref().is_some_and(|t| !t.is_empty()) {
+                bail!("the request's lock has extra conditions ({:?}); this wallet pays plain P2PK locks only", n.tags);
+            }
+            Some(PublicKey::from_str(&n.data).map_err(|e| anyhow!("request's P2PK key is invalid: {e}"))?)
         }
         Some(n) => bail!("the request asks for an unsupported lock kind {:?}", n.kind),
         None => None,
     };
+    let conditions = locked_to.map(|to| SpendingConditions::new_p2pk(to, None));
     let opts = SendOptions { send_kind: SendKind::OnlineExact, conditions, ..Default::default() };
     let prepared = wallet.prepare_send(Amount::from(amount), opts).await.map_err(|e| match e {
         cdk::Error::InsufficientFunds => anyhow!("not enough ecash: balance is below {amount} zat"),
@@ -210,7 +204,7 @@ pub async fn pay(wallet: &Wallet, seed: &[u8; 64], request: &str, amount: Option
         status: resp.status_code,
         body: resp.as_str().unwrap_or("").to_owned(),
         token: token.to_string(),
-        refund_at,
+        locked_to,
     })
 }
 

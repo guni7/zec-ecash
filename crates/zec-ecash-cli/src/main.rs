@@ -315,26 +315,25 @@ async fn run(opts: Opts) -> Result<()> {
         }
         ["pay", request, rest @ ..] => {
             let mut amount = None;
-            let mut refund_after = 900;
             let mut it = rest.iter();
             while let Some(a) = it.next() {
                 match *a {
                     "--amount" => amount = Some(it.next().context("--amount <zat>")?.parse().context("--amount must be a number")?),
-                    "--refund-after" => refund_after = it.next().context("--refund-after <secs>")?.parse().context("--refund-after must be seconds")?,
-                    _ => bail!("usage: pay <creqA...> [--amount <zat>] [--refund-after <secs>]"),
+                    _ => bail!("usage: pay <creqA...> [--amount <zat>]"),
                 }
             }
-            let paid = tokens::pay(&wallet, &seed, request, amount, refund_after).await?;
+            let paid = tokens::pay(&wallet, request, amount).await?;
             if (200..300).contains(&paid.status) {
                 println!("paid {} zat to {}: {}", paid.amount, paid.target, paid.body);
             } else {
                 println!("payment refused ({}): {}", paid.status, paid.body);
-                if let Some(at) = paid.refund_at {
-                    println!(
-                        "Your {} zat are locked to the receiver with a refund to you after unix time {at}; \
-                         recover them then with: zec-ecash-cli receive <token>",
+                match paid.locked_to {
+                    Some(k) => println!(
+                        "Your {} zat are locked to the payee's key {k}: only they can redeem them. Hand them this \
+                         token (they can receive it in their wallet), or deliver it again if the shop was offline.",
                         paid.amount
-                    );
+                    ),
+                    None => println!("The token is unlocked: take it back with `zec-ecash-cli receive <token>`."),
                 }
                 println!("token: {}", paid.token);
                 bail!("not paid");

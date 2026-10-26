@@ -9,6 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "node tests/run.mjs",
     "e2e:devnet": "node --experimental-websocket tests/e2e/devnet.mjs",
+    "e2e:beginner": "node --experimental-websocket tests/e2e/beginner.mjs",
+    "e2e:audit": "node --experimental-websocket tests/e2e/audit.mjs",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

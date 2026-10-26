@@ -1,0 +1,62 @@
+import './setup';
+import assert from 'node:assert/strict';
+import { test } from 'node:test';
+import { classify } from '../src/ui/classify';
+import { money, parseAmount, plain, plainOrNull, setZatsFirst } from '../src/ui/words';
+
+test('scan: each kind of code goes to its place', () => {
+  assert.equal(classify('cashuBo2FteCJodHRwczovL2V4YW1wbGU').kind, 'token');
+  assert.equal(classify('  cashu:cashuBo2Ft\n').text, 'cashuBo2Ft');
+  assert.equal(classify('creqApWF0YWJjZGVm').kind, 'request');
+  assert.equal(classify('zcash:u1abc?amount=0.1').kind, 'address');
+  assert.equal(classify(`uregtest1${'q'.repeat(60)}`).kind, 'address');
+  assert.equal(classify(`u1${'x'.repeat(100)}`).kind, 'address');
+  assert.equal(classify('t1Hsc1LR8yKnbbe3twRp88p6vFfC5t7DLbs').kind, 'address');
+  const pub = `02${'AB'.repeat(32)}`;
+  assert.deepEqual(classify(pub), { kind: 'pubkey', text: pub.toLowerCase() });
+  for (const x of ['hello', 'https://example.com', `04${'ab'.repeat(32)}`, 'u1short', '']) assert.equal(classify(x).kind, 'unknown', x);
+});
+
+test('amounts: ZEC with up to 8 decimals, comma as decimal point, zats as whole numbers', () => {
+  assert.equal(parseAmount('0.0006', 'ZEC'), 60_000);
+  assert.equal(parseAmount('0,0006', 'ZEC'), 60_000);
+  assert.equal(parseAmount('.5', 'ZEC'), 50_000_000);
+  assert.equal(parseAmount('1', 'ZEC'), 100_000_000);
+  assert.equal(parseAmount('0.00000001', 'ZEC'), 1);
+  assert.equal(parseAmount(' ', 'ZEC'), null);
+  assert.throws(() => parseAmount('0.000000001', 'ZEC'), /8 decimal places/);
+  assert.throws(() => parseAmount('0', 'ZEC'), /above zero/);
+  assert.throws(() => parseAmount('1.2.3', 'ZEC'), /like 0.001/);
+  assert.equal(parseAmount('60,000', 'zats'), 60_000);
+  assert.throws(() => parseAmount('1.5', 'zats'), /whole number/);
+});
+
+test('amounts: ZEC first with zats underneath, or the reverse', () => {
+  setZatsFirst(false);
+  assert.deepEqual(money(60_000), { main: '0.0006 ZEC', sub: '60,000 zats' });
+  assert.deepEqual(money(1), { main: '0.00000001 ZEC', sub: '1 zat' });
+  setZatsFirst(true);
+  assert.deepEqual(money(60_000), { main: '60,000 zats', sub: '0.0006 ZEC' });
+  setZatsFirst(false);
+});
+
+test('plain words: wallet errors say what happened and what to do, without jargon', () => {
+  const cases: Array<[string, RegExp]> = [
+    ['Already spent: this token was redeemed before.', /already used/],
+    ['Mint unreachable at https://x/mint. Is the devnet running?', /Can’t reach the service/],
+    ['Not enough ecash: balance is 5 zat.', /don’t have enough money/],
+    ['Wrong mint: this token is from https://other.example/mint; this wallet uses https://x/mint.', /another service \(other\.example\)/],
+    ['Offline, not accepted: This token is not locked to your key, so the sender could spend it.', /offline.*show them your code/],
+    ["The mint's minimum deposit is 1000 zat.", /minimum is 0\.00001 ZEC/],
+    ['Deposit confirmed: minted 60000 zat of ecash.', /Added 0\.0006 ZEC/],
+    ['Withdrawal paid: 12000 zat sent in abc; fee 1 zat, change 2 zat.', /Cashed out 0\.00012 ZEC/],
+    ['Partial payment received: 250 of 900 zat. The request is still unpaid; you can refund it.', /Partial payment: 0\.0000025 ZEC of 0\.000009 ZEC/],
+    ['The mint refused: reserve cap reached; 1 ecash token', /^The service said no: reserve cap reached; 1 money code$/],
+  ];
+  for (const [msg, want] of cases) {
+    const out = plain(msg);
+    assert.match(out, want, msg);
+    assert.doesNotMatch(out, /\b(mint|token|ecash|proof|melt|quote|DLEQ|P2PK|NUT)\b/i, out);
+  }
+  assert.equal(plainOrNull('Deposit quote created: pay exactly 0.0006 ZEC to the address shown.'), null);
+});

@@ -4,7 +4,7 @@ import { test } from 'node:test';
 import { buildFeed } from '../src/wallet/activity';
 import { parsePaymentUri, zip321, zatToZec } from '../src/wallet/onchain';
 import { filledSegments } from '../src/wallet/status';
-import { PATHS, parse } from '../src/ui/router';
+import { PATHS, REDIRECTS, parse } from '../src/ui/router';
 
 test('routes: every page parses to itself', () => {
   for (const p of PATHS) assert.equal(parse(`#${p}`).path, p);
@@ -16,6 +16,15 @@ test('routes: empty, bare and trailing-slash hashes', () => {
   assert.equal(parse('#/').path, '/');
   assert.equal(parse('#/send/').path, '/send');
   assert.equal(parse('#send').path, '/send');
+});
+
+test('routes: old pages redirect, keeping their parameters', () => {
+  const r = parse('#/request?r=abc');
+  assert.equal(r.path, '/receive');
+  assert.equal(r.moved, true);
+  assert.equal(r.params.get('r'), 'abc');
+  for (const to of Object.values(REDIRECTS)) assert.ok((PATHS as readonly string[]).includes(to));
+  assert.equal(parse('#/receive').moved, undefined);
 });
 
 test('routes: unknown pages go home', () => {
@@ -66,4 +75,28 @@ test('activity feed: newest first, pending flagged, links to resume', () => {
       ['receive', 70, false, '/receive'],
     ],
   );
+  assert.deepEqual(
+    feed.map((f) => f.title),
+    ['Sent', 'Add money', 'Cash out', 'Received'],
+  );
+});
+
+test('activity feed: payment requests link to Receive; partial payments carry the amount asked', () => {
+  const feed = buildFeed({
+    deposits: [],
+    withdrawals: [],
+    sent: [],
+    received: [],
+    requests: [
+      { id: 'q1', index: 0, pubkey: '02', amount: 900, created: 1000, state: 'open', extras: [{ n: 1, kind: 'partial', received: 250, at: 2000, state: 'done' }] },
+    ],
+  });
+  assert.deepEqual(
+    feed.map((f) => [f.title, f.amount, f.href, f.of]),
+    [
+      ['Partial payment received', 250, '/receive?r=q1', 900],
+      ['Asked for payment', 900, '/receive?r=q1', undefined],
+    ],
+  );
+  assert.ok(!feed.some((f) => /\b(mint|token|ecash|zat)\b/i.test(`${f.title} ${f.status}`)));
 });

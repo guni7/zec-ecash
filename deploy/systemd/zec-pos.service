@@ -2,9 +2,11 @@
 # 127.0.0.1:9090 only; Caddy proxies https://<domain>/pos/* to it (deploy/Caddyfile.example).
 # Install: sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
 #          sudo systemctl enable --now zec-pos
+# It never holds spendable money: payments are locked to the payee's phone, which collects them;
+# the server only checks and stores them until then (crates/pos/src/locked.rs).
 # Its wallet seed: ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos init (once).
-# State: mainnet/pos/ (wallet, requests, admin socket, saved sweep tokens).
-# Move the takings out: ZEC_NETWORK=mainnet ./target/release/pos sweep (docs/deploy-mainnet.md).
+# State: mainnet/pos/ (requests and stored payments, the legacy wallet, admin socket).
+# Legacy wallet balance out: ZEC_NETWORK=mainnet ./target/release/pos sweep (docs/deploy-mainnet.md).
 # Logs: mainnet/logs/pos.log (+ .1..5), capped by the devlog crate; startup lines in journald.
 [Unit]
 Description=zec-ecash point of sale (MAINNET, real ZEC)

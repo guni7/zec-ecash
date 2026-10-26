@@ -130,7 +130,7 @@ if [ $is_main = 1 ]; then
     fi
     if [ -S "$MAIN_DIR/mainnet/pos/admin.sock" ] && [ -x "$MAIN_DIR/target/release/pos" ]; then
       held=$(cd "$MAIN_DIR" && ZEC_NETWORK=mainnet ./target/release/pos balance 2>/dev/null | sed -n 's/.*holds \([0-9]*\) zat.*/\1/p')
-      ok "pos wallet holds ${held:-?} zat (move it out: ZEC_NETWORK=mainnet ./target/release/pos sweep)"
+      ok "legacy pos wallet holds ${held:-?} zat (move it out: ZEC_NETWORK=mainnet ./target/release/pos sweep)"
     fi
   fi
 fi

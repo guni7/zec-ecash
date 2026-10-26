@@ -145,13 +145,25 @@ runs the same checks, shows "accepted offline, will redeem when online", and red
 automatically (signing with its key) once the mint is reachable. Compact tokens and unlocked
 tokens are refused offline, with the reason.
 
-**Point of sale (NUT-18).** `crates/pos` (port of thesimplekid/cashu-payment-backend, see its
-header for the fixes) serves `GET /create?amount=&unit=zat`, `GET /check/{id}` and
-`POST /payment` on 127.0.0.1:8090, proxied as `https://<host>:5173/pos`. Its wallet needs
-`zec-ecash-cli --wallet pos init` once; `devnet-up.sh` then starts it. The page's "Request
-payment" card creates a request, shows its QR and polls until PAID; `zec-ecash-cli pay <creqA>`
-pays one, locking the proofs to the POS key with a refund to the payer after 15 minutes
-(`--refund-after`), so a refused payment can be taken back with `receive <token>` later. Start with `source scripts/env.sh` so the CLI uses the
+**Point of sale (NUT-18), locked to the payee's phone.** `crates/pos` (port of
+thesimplekid/cashu-payment-backend, see its header for the fixes) runs on 127.0.0.1:8090,
+proxied as `https://<host>:5173/pos`; `devnet-up.sh` starts it. The page's Request page asks it
+for a request locked to a fresh P2PK key derived from the phone's wallet seed (one key per
+request, never reused). The payer's wallet (`zec-ecash-cli pay <creqA>`, or the page's Send >
+Pay a request) locks every proof to exactly that key, with DLEQ proofs and no locktime or refund
+keys. The server checks the payment without claiming anything (mint, unit, the exact lock,
+DLEQ, NUT-07 unspent, no proof accepted twice), stores it and marks the request PAID. It never
+refuses a payment only the payee can spend: one that loses a race or arrives after PAID is kept
+as an extra payment, and one short of the request (on time or late) as a partial payment, which
+leaves the request unpaid ("received X of Y"). The phone collects both kinds too and offers a
+Refund button (an unlocked token, or one locked to a key the payer gives). Only payments failing
+those safety checks are refused. The phone then collects it: a fetch signed with the request's key, a swap at
+the mint signed with the same key, the proofs saved, and a signed ack after which the server
+deletes its copy. It collects automatically whenever the app is open, after a reload or after
+being offline; a wallet restored from its seed finds its requests by re-deriving the keys.
+Tests: `web/tests/e2e/pos-api.mjs` and `pos-page.mjs`. The server's own wallet
+(`--wallet pos`, `pos sweep`) is legacy: only requests created before this kept money there,
+and on mainnet nothing new lands in it. Start with `source scripts/env.sh` so the CLI uses the
 same mint URL as the phone.
 
 `--wallet <name>` (default `ecash`) uses `devnet/keys/<name>-wallet.seed` and
@@ -196,6 +208,22 @@ stable hostname for `<host>`: this Mac's mDNS name doesn't change when the netwo
 The CLI trusts the root through `ZEC_MINT_CA=web/certs/rootCA.pem` (CDK's HTTP client loads it
 via `SSL_CERT_FILE`, plus the OS store), so `mkcert -install` on the Mac is optional.
 `web/smoke.mjs` runs the page's cashu-ts calls from Node, for a check without a phone.
+
+## Privacy and trust
+
+- **Ecash.** The mint signs blinded messages, so it can't link a deposit to the ecash later
+  spent, sent or withdrawn. It does see amounts, timing and each withdrawal's address.
+- **Reserve.** The mint holds the ZEC; a withdrawal needs 2 of 3 FROST guardians, each of which
+  re-checks it against the mint's public quote. `/reserves` and the Status page show the reserve
+  against outstanding ecash, live; withdrawal addresses are never published there.
+- **Point of sale.** The POS server never holds spendable funds: every payment is P2PK-locked to
+  a key only the payee's phone holds, and the server only checks and stores it until the phone
+  collects it. It learns amounts and timing. A compromised POS server can withhold or delete
+  payments (the payer's ecash is then stuck, locked to the payee's key), but it can't steal them.
+  Each request uses a fresh key, so the mint can't link one shop's payments when they are
+  redeemed.
+- **This browser.** Ecash, keys and the wallet seed live only in this browser's storage; anyone
+  with the device or a backup file can spend them.
 
 ## Why the mint is a separate process
 `cdk-sqlite` / `cdk-axum` and the Zcash crates conflict (`libsqlite3-sys`, `sha2`),

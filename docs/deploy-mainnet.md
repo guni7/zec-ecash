@@ -306,10 +306,26 @@ A unit that stays `inactive` with `ConditionResult=no` is waiting for a file
 The web wallet's Request page creates NUT-18 payment requests at the point of sale
 (`crates/pos`, `zec-pos.service`): Caddy proxies `https://zecmint.duckdns.org/pos/*` to it on
 127.0.0.1:9090. Without it the page says "Point of sale is offline" and disables Create request.
-It accepts payments only at `ZEC_MINT_URL`, only in zat, P2PK-locked to its own key; its settings
-(`ZEC_POS_URL`, `ZEC_POS_ADDR`) are in `mainnet/.env` (see `deploy/mainnet.env.example`).
 
-Install and start (the unit was copied with the others above):
+**The server never holds spendable money.** Each request is P2PK-locked to a fresh key that only
+the payee's phone holds (derived from its wallet seed, one key per request). Payers lock their
+ecash to that key. On delivery the server checks the payment without claiming it: the mint
+(`ZEC_MINT_URL` only), the unit (zat), that every proof is locked to exactly that key with no
+locktime, refund keys or extra pubkeys, valid DLEQ proofs, unspent at the mint (NUT-07), and no
+proof accepted twice. A payment failing any of these is refused. One that passes is never
+refused, because its ecash is locked to the payee's key and refusing it would strand it: a full
+payment marks the request PAID (of two racing payers exactly one wins); one that loses the race
+or arrives after PAID is stored as an extra payment; one short of the request (on time or late)
+as a partial payment, leaving the request unpaid. The phone collects all of them and can refund
+extras and partials. The phone collects it with requests signed by the request's
+key, redeems it at the mint, and acknowledges; the server then deletes its copy (only once the
+mint reports those proofs spent). So the server learns amounts and timing, and a compromised
+server can withhold or delete payments, but it can't spend them. On MAINNET it refuses requests
+without the payee's key.
+
+Its settings (`ZEC_POS_URL`, `ZEC_POS_ADDR`) are in `mainnet/.env` (see
+`deploy/mainnet.env.example`). It still needs a wallet seed to start (it uses the wallet as its
+mint client for keysets and NUT-07 checks, and for the legacy wallet below):
 
 ```sh
 cd ~/zec-ecash
@@ -317,21 +333,24 @@ ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos init   # once: m
 sudo systemctl enable --now zec-pos
 ```
 
-`init` refuses to overwrite an existing seed. Back the seed up like any wallet seed: the POS
-wallet holds every payment it has taken. Its state is in `mainnet/pos/` (wallet, requests, the
-admin socket, saved sweep tokens).
-
 Check:
 
 ```sh
 systemctl status zec-pos && tail -f ~/zec-ecash/mainnet/logs/pos.log
 curl -s http://127.0.0.1:9090/health; curl -s https://zecmint.duckdns.org/pos/health
-ZEC_NETWORK=mainnet ./target/release/pos balance                       # what it holds
+sqlite3 ~/zec-ecash/mainnet/pos/pos.sqlite "SELECT COUNT(*) FROM pos_quote WHERE token IS NOT NULL"   # paid, not yet collected
 ```
 
-Move the takings out regularly (payments only ever accumulate there):
+State is in `mainnet/pos/` (request DB with the stored, payee-locked payments; the legacy wallet;
+the admin socket). Back it up like the rest of `mainnet/`: a payment stays there until the
+payee's phone collects it.
+
+**Legacy: the POS wallet and `pos sweep`.** Requests created before locked payments were locked
+to the POS's own key and redeemed into its wallet. On MAINNET nothing new lands there (legacy
+requests can't be created or paid any more), but move any balance it still has out:
 
 ```sh
+ZEC_NETWORK=mainnet ./target/release/pos balance        # what the legacy wallet holds
 ZEC_NETWORK=mainnet ./target/release/pos sweep          # a token for all of it (or: pos sweep <zat>)
 ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli receive <token>       # into your own wallet
 ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli withdraw <zat> <u1...>   # and out to ZEC, if you like
@@ -339,11 +358,11 @@ ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli withdraw <zat> <u1...>   # an
 
 `pos sweep` asks the running service over `mainnet/pos/admin.sock` (mode 600, only `gunit`), so
 it keeps serving; each token is also saved in `mainnet/pos/sweeps/` (mode 600) before it is
-printed: delete the file once the token is redeemed. To withdraw straight from the POS wallet
+printed: delete the file once the token is redeemed. To withdraw straight from the legacy wallet
 instead, stop the service first (its wallet DB is locked while it runs):
 `sudo systemctl stop zec-pos && ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos withdraw <zat> <u1...> && sudo systemctl start zec-pos`.
 
-`server-check.sh` checks the unit, `/health` locally and through Caddy, and prints what the POS
+`server-check.sh` checks the unit, `/health` locally and through Caddy, and prints what the legacy
 wallet holds.
 
 ## 8. Before the first transaction
@@ -392,7 +411,7 @@ Guardian 3 is offline whenever the Mac sleeps; withdrawals still need only two g
 - Rotating a guardian's auth secret: `make-auth-key` refuses to overwrite, so move the old
   `guardian-N.auth` aside on both machines, make a new one, copy it, restart both.
 - Rotating TLS: `scripts/guardian-ca.sh issue` again with the CA key, copy, restart the guardian.
-- Point of sale takings: `ZEC_NETWORK=mainnet ./target/release/pos sweep` (section 7).
+- Point of sale: payments go to the payee's phone; the legacy POS wallet's balance, if any, out with `ZEC_NETWORK=mainnet ./target/release/pos sweep` (section 7).
 
 ## 11. Never commit
 

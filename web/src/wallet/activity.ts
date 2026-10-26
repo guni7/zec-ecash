@@ -1,9 +1,10 @@
 // One history list from the separate records: deposits and withdrawals (onchain.ts), sent tokens
 // and receipts (tokens.ts). Pure: the Activity and Home pages render it.
 import type { Deposit, Withdrawal } from './onchain';
+import type { PosRecord } from './posreq';
 import type { Received, SentToken } from './tokens';
 
-export type FeedKind = 'deposit' | 'withdraw' | 'send' | 'receive';
+export type FeedKind = 'deposit' | 'withdraw' | 'send' | 'receive' | 'request';
 export type FeedItem = {
   id: string;
   kind: FeedKind;
@@ -23,8 +24,53 @@ export function buildFeed(src: {
   withdrawals: readonly Withdrawal[];
   sent: readonly SentToken[];
   received: readonly Received[];
+  requests?: readonly PosRecord[];
 }): FeedItem[] {
   const items: FeedItem[] = [];
+  for (const r of src.requests ?? []) {
+    const [status, tone] = (
+      {
+        open: ['waiting for payment', 'muted'],
+        paid: ['paid · collecting', 'live'],
+        collecting: ['paid · collecting', 'live'],
+        collected: ['collected · finishing', 'live'],
+        done: ['collected', 'ok'],
+      } as const
+    )[r.state];
+    items.push({
+      id: `q:${r.id}`,
+      kind: 'request',
+      amount: r.collected ?? r.received ?? r.amount,
+      at: r.paidAt ?? r.created,
+      status: r.error && r.state !== 'done' ? `${status} · ${r.error}` : status,
+      tone,
+      // Paid but not yet in this wallet: tap to collect.
+      pending: r.state === 'paid' || r.state === 'collecting' || r.state === 'collected',
+      href: `/request?r=${encodeURIComponent(r.id)}`,
+      title: 'Request',
+    });
+    for (const x of r.extras ?? []) {
+      const [xs, xt] = x.refundId
+        ? (['refunded', 'muted'] as const)
+        : x.state === 'done'
+          ? (['in your wallet', 'ok'] as const)
+          : (['collecting', 'live'] as const);
+      items.push({
+        id: `x:${r.id}:${x.n}`,
+        kind: 'request',
+        amount: x.collected ?? x.received,
+        at: x.at,
+        status: x.error && x.state !== 'done' ? `${xs} · ${x.error}` : xs,
+        tone: xt,
+        pending: x.state !== 'done',
+        href: `/request?r=${encodeURIComponent(r.id)}`,
+        title:
+          x.kind === 'partial'
+            ? `Partial payment received: ${x.received.toLocaleString('en-US')} of ${r.amount.toLocaleString('en-US')} zat`
+            : `Extra payment received: ${x.received.toLocaleString('en-US')} zat`,
+      });
+    }
+  }
   for (const d of src.deposits) {
     const [status, tone] = (
       {

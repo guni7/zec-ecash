@@ -15,6 +15,7 @@ import { buildFeed } from './wallet/activity';
 import { createCore } from './wallet/core';
 import { initOnchain } from './wallet/onchain';
 import { createTokens } from './wallet/tokens';
+import { createPosRequests } from './wallet/posreq';
 import { h, toast } from './ui/dom';
 import { activity } from './ui/pages/activity';
 import { deposit } from './ui/pages/deposit';
@@ -44,7 +45,8 @@ function mintUrlProblem(): string | undefined {
 }
 
 const core = createCore({ mintUrl: MINT_URL, unit: UNIT, mainnet: MAINNET });
-const tokens = createTokens(core);
+const posreq = createPosRequests(core);
+const tokens = createTokens(core, () => posreq.allKeys());
 const onchain = initOnchain({
   mintUrl: MINT_URL,
   unit: UNIT,
@@ -61,7 +63,8 @@ const app: App = {
   core,
   tokens,
   onchain,
-  feed: () => buildFeed({ deposits: onchain.deposits(), withdrawals: onchain.withdrawals(), sent: tokens.sent(), received: tokens.received() }),
+  posreq,
+  feed: () => buildFeed({ deposits: onchain.deposits(), withdrawals: onchain.withdrawals(), sent: tokens.sent(), received: tokens.received(), requests: posreq.records() }),
   onChange(fn) {
     const a = core.on((e) => e.type !== 'say' && e.type !== 'mint' && fn());
     const b = onchain.subscribe(fn);
@@ -140,6 +143,7 @@ async function checkMint() {
     await core.connect();
     onchain.setInfo(info);
     void onchain.resume(); // open deposits and withdrawals, saved across reloads
+    void collectPos(); // payments to this phone's point-of-sale requests
     await tokens.redeemPending();
   } catch (e) {
     if (!navigator.onLine) return; // the offline strip already says so
@@ -154,6 +158,16 @@ if ('serviceWorker' in navigator) {
 // Load the QR decoder's worker now, while online, so scanning also works offline (the service
 // worker caches it).
 void QrScanner.scanImage(document.createElement('canvas'), { returnDetailedScanResult: true }).catch(() => {});
+
+/** Collects payments to this phone's requests; a wallet with none (new or restored) looks first. */
+async function collectPos() {
+  if (!posreq.records().length) await posreq.scan().catch(() => 0);
+  await posreq.collectAll();
+}
+
+setInterval(() => {
+  if (posreq.needsWork()) void posreq.collectAll();
+}, 20_000);
 
 setInterval(() => {
   if (tokens.pendingOffline().length) void tokens.redeemPending();

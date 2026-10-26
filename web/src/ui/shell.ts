@@ -120,6 +120,8 @@ export function createShell(opts: { mainnet: boolean; mintHost: string; onBack: 
       }
       return;
     }
+    // The same message twice in a row shows once.
+    if ([...toasts.children, ...inlineToasts.children].some((t) => t.textContent === text)) return;
     // At most two at a time (newest wins), gone after about 4 s, and a tap dismisses one.
     for (const old of [...toasts.children, ...inlineToasts.children].slice(0, -1)) old.remove();
     const t = h('div', { class: `toast ${tone}`, onclick: () => t.remove() }, text);

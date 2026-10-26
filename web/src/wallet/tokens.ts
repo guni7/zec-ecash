@@ -3,6 +3,7 @@
 import { CheckStateEnum, getEncodedToken, getTokenMetadata, type Proof } from '@cashu/cashu-ts';
 import { loadJson, reviveProofs, saveJson, sumAmounts, type Core } from './core';
 import { loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
+import { deliver, readRequest, type RequestInfo } from './posreq';
 
 export type SentToken = {
   id: string;
@@ -15,6 +16,9 @@ export type SentToken = {
   compact: boolean;
   /** The proofs inside the token (for state checks and reclaim). */
   proofs: unknown[];
+  /** Paid to a NUT-18 request: where it was (or is to be) delivered, and the last refusal. */
+  request?: RequestInfo;
+  deliveryError?: string;
 };
 
 export type Received = { id: string; amount: number; at: number; how: 'online' | 'offline' | 'redeemed-offline' | 'reclaim' };
@@ -22,7 +26,8 @@ export type Received = { id: string; amount: number; at: number; how: 'online' |
 const normalizeMint = (url: string) => url.trim().replace(/\/+$/, '').toLowerCase();
 const newId = () => `${Date.now().toString(36)}${Math.random().toString(36).slice(2, 8)}`;
 
-export function createTokens(core: Core) {
+/** `extraKeys`: private keys this wallet also holds (its point-of-sale request keys). */
+export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
   const SENT = core.key('sent');
   const RECEIVED = core.key('received');
   const PENDING = core.key('offline-received');
@@ -73,8 +78,9 @@ export function createTokens(core: Core) {
     let got: Proof[];
     try {
       const w = await core.connect();
-      // privkey: signs for proofs P2PK-locked to this wallet (ignored for unlocked ones).
-      got = await w.receive(token, { privkey: core.me.priv });
+      // privkey: signs for proofs P2PK-locked to this wallet's key or one of its request keys
+      // (a payment handed over by hand); ignored for unlocked ones.
+      got = await w.receive(token, { privkey: [core.me.priv, ...extraKeys()] });
     } catch (e) {
       if (core.isNetworkError(e)) return { amount: acceptOffline(token), offline: true };
       throw e;
@@ -153,6 +159,37 @@ export function createTokens(core: Core) {
     return item;
   }
 
+  /** Pays a NUT-18 request: proofs P2PK-locked to the request's key (with DLEQ proofs, no
+   * locktime or refund), saved as a sent token before they leave the balance, then delivered. */
+  async function payRequest(creq: string): Promise<{ item: SentToken; ok: boolean; message: string }> {
+    const info = readRequest(creq, core.mintUrl, core.unit);
+    const balance = core.balance();
+    if (balance < info.amount) throw new Error(`Not enough ecash: the request is for ${info.amount} ${core.unit}, balance is ${balance}.`);
+    const w = await core.connect();
+    const { keep, send: out } = info.lockTo
+      ? await w.send(info.amount, core.proofs(), undefined, { send: { type: 'p2pk', options: { pubkey: info.lockTo } } })
+      : await w.send(info.amount, core.proofs());
+    const token = getEncodedToken({ mint: core.mintUrl, unit: core.unit, proofs: out });
+    const item: SentToken = { id: newId(), token, amount: info.amount, at: Date.now(), state: 'pending', lockedTo: info.lockTo, compact: false, proofs: JSON.parse(JSON.stringify(out)), request: info };
+    sent = [item, ...sent];
+    saveSent();
+    core.setProofs(keep);
+    return { item, ...(await redeliver(item.id)) };
+  }
+
+  /** Delivers (again) a token paid to a request. */
+  async function redeliver(id: string): Promise<{ ok: boolean; message: string }> {
+    const s = sent.find((x) => x.id === id);
+    if (!s?.request) throw new Error('This token was not paid to a request.');
+    const [ok, message] = await deliver(s.request, core.mintUrl, core.unit, reviveProofs(s.proofs));
+    if (ok) {
+      s.state = 'received';
+      delete s.deliveryError;
+    } else s.deliveryError = message;
+    saveSent();
+    return { ok, message };
+  }
+
   /** Asks the mint whether the recipient has redeemed it yet. */
   async function refresh(id: string): Promise<SentToken | undefined> {
     const s = sent.find((x) => x.id === id);
@@ -196,6 +233,8 @@ export function createTokens(core: Core) {
     receive,
     redeemPending,
     send,
+    payRequest,
+    redeliver,
     refresh,
     markReceived,
     reclaim,

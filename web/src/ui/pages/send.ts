@@ -3,6 +3,7 @@ import { ago, busy, copyChip, copyText, fmtZat, h, svg, toast, ICON } from '../d
 import { qrCard } from '../qr';
 import { go } from '../router';
 import { scanQr } from '../scanner';
+import { readRequest } from '../../wallet/posreq';
 import { amountField, amountInput, field, glitch, pageHead, waiting, type App, type Page } from '../widgets';
 
 export const send: Page = {
@@ -62,12 +63,71 @@ function form(app: App) {
     h('div', { class: 'thumb' }, go_),
   );
 
+  // Pay a NUT-18 payment request (a shop's creqA QR): locked to the key it names, delivered to it.
+  const creq = h('textarea', { class: 'input mono', rows: '2', spellcheck: 'false', autocomplete: 'off', placeholder: 'creqA…' });
+  const creqInfo = h('p', { class: 'hint' });
+  const payBtn = h('button', { type: 'submit', class: 'btn primary block' }, '[ PAY REQUEST ]');
+  const scanReq = h('button', { type: 'button', class: 'btn' }, svg(ICON.scan), 'Scan request');
+  const describe = () => {
+    if (!creq.value.trim()) return (creqInfo.textContent = '');
+    try {
+      const r = readRequest(creq.value, app.core.mintUrl, app.core.unit);
+      creqInfo.textContent = `${fmtZat(r.amount)} zat${r.description ? ` · ${r.description}` : ''} · ${r.lockTo ? 'locked to the shop’s key (only they can redeem it)' : 'unlocked'}`;
+      creqInfo.className = 'hint';
+    } catch (e) {
+      creqInfo.textContent = e instanceof Error ? e.message : String(e);
+      creqInfo.className = 'hint t-bad';
+    }
+  };
+  creq.addEventListener('input', describe);
+  scanReq.onclick = async () => {
+    const got = await scanQr('Point the camera at a payment request QR code');
+    if (got) {
+      creq.value = got.trim();
+      describe();
+    }
+  };
+  const payForm = h(
+    'form',
+    {
+      class: 'stack',
+      onsubmit: (e: SubmitEvent) => {
+        e.preventDefault();
+        void busy(
+          payBtn,
+          async () => {
+            const { item, ok, message } = await app.tokens.payRequest(creq.value);
+            creq.value = '';
+            creqInfo.textContent = '';
+            go(`/send?t=${encodeURIComponent(item.id)}`, true);
+            toast(
+              !ok
+                ? `Not delivered: ${message} The payment is saved; deliver it again from its page.`
+                : message === 'PARTIAL'
+                  ? 'The shop received your payment, but it is less than the request, so the request is still unpaid. The shop can refund it.'
+                  : message === 'EXTRA'
+                  ? 'The request was already paid. The shop received your payment as an extra payment and can refund it to you.'
+                  : `Paid ${fmtZat(item.amount)} zat to the request.`,
+              ok ? 'ok' : 'bad',
+            );
+          },
+          app.core.explain,
+        );
+      },
+    },
+    field('Payment request', creq),
+    creqInfo,
+    h('div', { class: 'row' }, scanReq),
+    h('div', { class: 'thumb' }, payBtn),
+  );
+
   const pending = app.tokens.sent().filter((s) => s.state === 'pending');
   const el = h(
     'div',
     { class: 'page' },
     pageHead('SEND', 'Send ecash', 'Make a token for an amount and hand it over as a QR code or text.'),
     formEl,
+    h('section', { class: 'section card' }, h('span', { class: 'tag' }, '[ PAY A REQUEST ]'), h('p', { class: 'hint' }, 'A shop’s payment request (NUT-18): the ecash is locked to the key it names and delivered straight to it.'), payForm),
     pending.length
       ? h(
           'section',
@@ -92,11 +152,24 @@ function tokenView(app: App, s: SentToken) {
   const render = () => {
     const cur = app.tokens.sent().find((x) => x.id === s.id) ?? s;
     status.replaceChildren(
-      cur.state === 'pending' ? waiting('NOT REDEEMED YET') : cur.state === 'received' ? glitch('RECEIVED', 't-live') : h('span', { class: 't-muted' }, 'RECLAIMED'),
+      cur.state === 'pending'
+        ? waiting(cur.request ? 'NOT DELIVERED' : 'NOT REDEEMED YET')
+        : cur.state === 'received'
+          ? glitch(cur.request ? 'PAID' : 'RECEIVED', 't-live')
+          : h('span', { class: 't-muted' }, 'RECLAIMED'),
       h('span', { class: 'hint' }, ` · ${fmtZat(cur.amount)} zat · ${cur.lockedTo ? 'locked' : cur.compact ? 'compact' : 'with DLEQ'} · ${ago(cur.at)}`),
     );
     const btns: HTMLElement[] = [];
-    if (cur.state === 'pending') {
+    if (cur.state === 'pending' && cur.request) {
+      const again = h('button', { type: 'button', class: 'btn primary' }, 'Deliver again');
+      again.onclick = () =>
+        void busy(again, async () => {
+          const r = await app.tokens.redeliver(cur.id);
+          toast(r.ok ? 'Delivered: the request is paid.' : `Not delivered: ${r.message}`, r.ok ? 'ok' : 'bad');
+        }, app.core.explain);
+      btns.push(again);
+      if (cur.deliveryError) btns.push(h('p', { class: 'hint t-bad' }, `Last attempt: ${cur.deliveryError}. Only the shop’s key can redeem this token; if the shop can’t take it, hand them the token.`));
+    } else if (cur.state === 'pending') {
       const check = h('button', { type: 'button', class: 'btn' }, 'Check now');
       check.onclick = () => void busy(check, async () => {
         const r = await app.tokens.refresh(cur.id);

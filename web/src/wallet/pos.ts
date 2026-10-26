@@ -1,4 +1,4 @@
-// NUT-18 point of sale (crates/pos, proxied at /pos): health, create a payment request, check it.
+// NUT-18 point of sale (crates/pos, proxied at /pos): is it up? Requests are in posreq.ts.
 // No DOM. Any answer that isn't the POS's own JSON (a proxy's 502/503/504, an HTML error page)
 // means the point of sale is offline.
 
@@ -38,15 +38,4 @@ export async function posOnline(): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-export async function createRequest(amount: number, unit: string): Promise<PosRequest> {
-  if (!Number.isInteger(amount) || amount <= 0) throw new Error('Enter a whole number of zat.');
-  const { res, body } = await posJson<{ id?: string; request?: string; error?: string }>(`/create?amount=${amount}&unit=${unit}`);
-  if (!res.ok || !body.id || !body.request) throw new Error(`Point of sale: ${body.error ?? `HTTP ${res.status}`}`);
-  return { id: body.id, request: body.request, amount };
-}
-
-export async function checkRequest(id: string): Promise<{ state?: string; received?: number }> {
-  return (await posJson<{ state?: string; received?: number }>(`/check/${encodeURIComponent(id)}`)).body;
 }

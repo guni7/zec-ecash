@@ -588,3 +588,10 @@ details.details textarea { margin-top: 6px; }
 .pos-offline { padding: 14px 16px; border: 1px solid var(--warn); border-radius: var(--radius-sm); background: #2a1c06; color: var(--warn); }
 .pos-offline strong { display: block; font: 700 15px var(--font-mono); letter-spacing: 0.06em; text-transform: uppercase; }
 .pos-offline p { margin: 4px 0 0; color: var(--fg-2); font-size: 14px; }
+
+/* extra payments on a request */
+.extra { display: flex; flex-direction: column; gap: 8px; padding: 14px; border: 1px solid var(--line-2); border-left: 3px solid var(--gold); border-radius: var(--radius-sm); background: var(--surface); }
+.extra-head { display: flex; justify-content: space-between; gap: 10px; flex-wrap: wrap; align-items: baseline; }
+.extra-head strong { font: 700 14px var(--font-mono); }
+.extra.partial { border-left-color: var(--warn); }
+.partial-line { margin: 0; padding: 10px 12px; border: 1px solid var(--warn); border-radius: var(--radius-sm); color: var(--warn); font-size: 14px; }

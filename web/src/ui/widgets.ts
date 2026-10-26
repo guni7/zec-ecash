@@ -2,6 +2,7 @@
 import type { FeedItem } from '../wallet/activity';
 import type { Core } from '../wallet/core';
 import type { Tokens } from '../wallet/tokens';
+import type { PosRequests } from '../wallet/posreq';
 import type { initOnchain } from '../wallet/onchain';
 import { ago, fmtZat, fmtZec, h, svg, ICON } from './dom';
 import type { Route } from './router';
@@ -12,6 +13,7 @@ export type App = {
   core: Core;
   tokens: Tokens;
   onchain: Onchain;
+  posreq: PosRequests;
   feed(): FeedItem[];
   /** Calls `fn` on any wallet change (balance, deposits, withdrawals, sends); returns unsubscribe. */
   onChange(fn: () => void): () => void;
@@ -57,7 +59,7 @@ export function amountField(label: string, input: HTMLInputElement, hint?: strin
 /** A tappable history row. */
 export function feedRow(item: FeedItem) {
   const sign = item.amount >= 0 ? '+' : '−';
-  const icon = { deposit: ICON.deposit, withdraw: ICON.withdraw, send: ICON.send, receive: ICON.receive }[item.kind];
+  const icon = { deposit: ICON.deposit, withdraw: ICON.withdraw, send: ICON.send, receive: ICON.receive, request: ICON.request }[item.kind];
   return h(
     'a',
     { href: `#${item.href}`, class: `feed-row ${item.pending ? 'pending' : ''}` },

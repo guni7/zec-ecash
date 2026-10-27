@@ -263,7 +263,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "143f5327f23168716be068f8e1014ba2ea16a6c91e8777bc8927da7b51e1df1f"
 dependencies = [
  "bs58",
- "hmac",
+ "hmac 0.13.0-pre.4",
  "rand_core 0.6.4",
  "ripemd 0.2.0-pre.4",
  "secp256k1",
@@ -1102,6 +1102,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "tokio",
+ "zcash_protocol",
  "zec-wallet",
 ]
 
@@ -1113,6 +1114,7 @@ checksum = "9ed9a281f7bc9b7576e61468ba615a66a5c8cfdff42420a70aa82701a3b1e292"
 dependencies = [
  "block-buffer 0.10.4",
  "crypto-common 0.1.7",
+ "subtle",
 ]
 
 [[package]]
@@ -1525,9 +1527,13 @@ dependencies = [
  "orchard",
  "pczt",
  "rand 0.8.8",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
+ "tokio-rustls",
+ "tower",
  "tracing",
  "zcash_keys",
  "zec-frost",
@@ -1719,6 +1725,15 @@ name = "hex_lit"
 version = "0.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3011d1213f159867b13cfd6ac92d2cd5f1345762c63be3554e84092d85a50bbd"
+
+[[package]]
+name = "hmac"
+version = "0.12.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "6c49c37c09c17a53d937dfbb742eb3a961d65a994e6bcdcf37e7399d0cc8ab5e"
+dependencies = [
+ "digest 0.10.7",
+]
 
 [[package]]
 name = "hmac"
@@ -2678,6 +2693,7 @@ dependencies = [
  "serde_json",
  "tokio",
  "tracing",
+ "zec-network",
 ]
 
 [[package]]
@@ -4854,6 +4870,7 @@ dependencies = [
  "rand 0.8.8",
  "serde_json",
  "tokio",
+ "zec-network",
 ]
 
 [[package]]
@@ -4862,14 +4879,27 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "frost-rerandomized",
+ "hmac 0.12.1",
  "http-body-util",
  "hyper",
  "hyper-util",
  "rand 0.8.8",
  "reddsa",
+ "rustls",
  "serde",
  "serde_json",
+ "sha2 0.10.9",
  "tokio",
+ "tokio-rustls",
+ "webpki-roots",
+]
+
+[[package]]
+name = "zec-network"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "zcash_protocol",
 ]
 
 [[package]]
@@ -4925,6 +4955,7 @@ dependencies = [
  "zcash_proofs",
  "zcash_protocol",
  "zec-frost",
+ "zec-network",
  "zip32",
 ]
 

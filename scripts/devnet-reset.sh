@@ -4,13 +4,20 @@
 #   devnet/zebra-state, devnet/mint (cdk-mintd work dir), every wallet DB in devnet/
 #   (*.sqlite incl. mint-reserve and user-wallet, *.redb = the CLI ecash wallet), the processor
 #   DB, guardian-*.signed.json (per-quote state tied to the mint DB), logs.
-# Never touches devnet/keys/ or .env.
+# Never touches devnet/keys/, .env, or anything in mainnet/ (MAINNET processes, on ports +1000,
+# are left running: processes are stopped by their devnet ports, not by name).
 #
 #   scripts/devnet-reset.sh              keep keys (same addresses; miner_address stays valid)
 #   scripts/devnet-reset.sh --new-keys   also new FROST keys (DKG), mint.ufvk, user and ecash
 #                                        wallet seeds; asks for confirmation (--yes skips it)
 set -eu
 cd "$(dirname "$0")/.."
+# Devnet scripts always work on regtest, whatever the shell's ZEC_NETWORK says.
+export ZEC_NETWORK=regtest
+# Paranoia: devnet/ must be its own directory, never (a link to) mainnet/.
+if [ -L devnet ] || { [ -d mainnet ] && [ "$(cd devnet && pwd -P)" = "$(cd mainnet && pwd -P)" ]; }; then
+  echo "devnet/ is a link or the same directory as mainnet/: refusing to reset" >&2; exit 1
+fi
 NEW_KEYS=0; YES=0
 for a in "$@"; do
   case "$a" in
@@ -32,24 +39,34 @@ WARN
   [ "$answer" = "new keys" ] || { echo "aborted; nothing changed"; exit 1; }
 fi
 
-stop() { # stop processes matching $1: SIGTERM (scripted background jobs ignore SIGINT), wait, KILL
+stop() { # stop processes matching $1 (only devnet-specific command lines): SIGTERM, wait, KILL
   pgrep -f "$1" >/dev/null || return 0
   pkill -TERM -f "$1" || true
   i=0; while pgrep -f "$1" >/dev/null && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
   pkill -KILL -f "$1" 2>/dev/null || true
   echo "stopped $2"
 }
-stop 'target/debug/zec-processor' zec-processor
-stop 'target/debug/pos' pos
-stop 'target/debug/guardian' guardians
-stop 'cdk-mintd' cdk-mintd
+stop_port() { # stop_port <port> <name>: stop whatever listens on this devnet port (SIGTERM, wait,
+  # KILL). By port, not by process name, so MAINNET processes (ports +1000) are never touched.
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -n "$pids" ] || return 0
+  kill -TERM $pids 2>/dev/null || true
+  i=0; while [ -n "$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null)" ] && [ $i -lt 15 ]; do sleep 1; i=$((i+1)); done
+  pids=$(lsof -nP -iTCP:"$1" -sTCP:LISTEN -t 2>/dev/null || true)
+  [ -z "$pids" ] || kill -KILL $pids 2>/dev/null || true
+  echo "stopped $2"
+}
+stop_port 50051 zec-processor
+stop_port 8090 pos
+for id in 1 2 3; do stop_port 710$id "guardian $id"; done
+stop_port 8085 cdk-mintd
 stop 'zebrad -c devnet/zebrad-regtest.toml' zebrad
 stop 'scripts/log-trim.sh --watch' log-trimmer
 pkill -TERM -f 'web/node_modules/.bin/vite' 2>/dev/null || true
 
 echo "deleting chain-dependent state:"
 for p in devnet/zebra-state devnet/mint devnet/*.sqlite devnet/*.sqlite-shm devnet/*.sqlite-wal \
-         devnet/*.sqlite-journal devnet/*.redb devnet/guardian-*.signed.json devnet/*.log devnet/logs devnet/quote.json; do
+         devnet/*.sqlite-journal devnet/*.redb devnet/pos devnet/guardian-*.signed.json devnet/*.log devnet/logs devnet/quote.json; do
   if [ -e "$p" ]; then rm -rf "$p"; echo "  deleted $p"; fi
 done
 
@@ -59,7 +76,7 @@ if [ "$NEW_KEYS" = 1 ]; then
     if [ -e "$p" ]; then rm -rf "$p"; echo "  deleted $p"; fi
   done
   echo "new keys:"
-  scripts/dkg
+  scripts/devnet-dkg.sh
   cargo run -q -p devwallet -- new
   cargo run -q -p zec-ecash-cli -- init
   ADDR=$(cargo run -q -p devwallet -- address)

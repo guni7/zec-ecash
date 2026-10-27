@@ -1,0 +1,42 @@
+# MAINNET point of sale (NUT-18 payment requests) on the main host: crates/pos, listening on
+# 127.0.0.1:9090 only; Caddy proxies https://<domain>/pos/* to it (deploy/Caddyfile.example).
+# Install: sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#          sudo systemctl enable --now zec-pos
+# It never holds spendable money: payments are locked to the payee's phone, which collects them;
+# the server only checks and stores them until then (crates/pos/src/locked.rs).
+# Its wallet seed: ZEC_NETWORK=mainnet ./target/release/zec-ecash-cli --wallet pos init (once).
+# State: mainnet/pos/ (requests and stored payments, the legacy wallet, admin socket).
+# Legacy wallet balance out: ZEC_NETWORK=mainnet ./target/release/pos sweep (docs/deploy-mainnet.md).
+# Logs: mainnet/logs/pos.log (+ .1..5), capped by the devlog crate; startup lines in journald.
+[Unit]
+Description=zec-ecash point of sale (MAINNET, real ZEC)
+After=network-online.target zec-mintd.service
+Wants=network-online.target
+# Not before its config and its wallet seed exist (never created by the service).
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/.env
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/pos-wallet.seed
+ConditionPathExists=/home/gunit/zec-ecash/target/release/pos
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gunit
+Group=gunit
+WorkingDirectory=/home/gunit/zec-ecash
+# ZEC_NETWORK is never read from a file: the unit says it. On MAINNET the POS reads its settings
+# (ZEC_MINT_URL, ZEC_POS_URL, ZEC_POS_ADDR, ZEC_MINT_CA) from mainnet/.env itself; it refuses
+# a non-loopback ZEC_POS_ADDR and non-https URLs.
+Environment=ZEC_NETWORK=mainnet
+EnvironmentFile=/home/gunit/zec-ecash/mainnet/.env
+# The POS never needs the mint's ecash key.
+UnsetEnvironment=CDK_MINTD_MNEMONIC
+ExecStart=/home/gunit/zec-ecash/target/release/pos
+Restart=always
+RestartSec=5
+TimeoutStopSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

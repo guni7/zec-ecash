@@ -2,15 +2,22 @@
 // no network (Step 4, safe offline receive). Network first, so a reload online always gets the
 // current code; the cache is only the fallback. Mint (/mint), point-of-sale (/pos) and processor status calls are
 // live data and are never cached.
-const CACHE = 'zec-ecash-shell-v1';
+const CACHE = 'zec-ecash-shell-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
-self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));
+self.addEventListener('activate', (e) =>
+  e.waitUntil(
+    caches
+      .keys()
+      .then((keys) => Promise.all(keys.filter((k) => k !== CACHE).map((k) => caches.delete(k))))
+      .then(() => self.clients.claim()),
+  ),
+);
 
 self.addEventListener('fetch', (e) => {
   const url = new URL(e.request.url);
   if (e.request.method !== 'GET' || url.origin !== self.location.origin) return;
-  if (['/mint', '/pos', '/reserves', '/withdrawal-quote'].some((p) => url.pathname.startsWith(p))) return;
+  if (['/mint', '/pos', '/reserves', '/deposit-quote', '/withdrawal-quote'].some((p) => url.pathname.startsWith(p))) return;
   e.respondWith(
     fetch(e.request)
       .then((res) => {

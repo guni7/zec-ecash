@@ -1,22 +1,35 @@
 //! Guardian: holds one 2-of-3 FROST share of the mint's spend key and signs withdrawals only
-//! after verifying them itself (see policy.rs). Devnet only: plain HTTP on loopback.
+//! after verifying them itself (see policy.rs). Plain HTTP on loopback.
 //!
-//!   guardian dkg part1|part2|part3 --id N     # one DKG step (scripts/dkg runs all of them)
+//!   guardian dkg --id N --threshold 2 --participants 3   # distributed DKG on this guardian's
+//!                                             # own machine; run again after each file delivery
+//!   guardian verify --id N                    # key share + pubkeys + UFVK agree, here and with
+//!                                             # the other guardians (see dkg.rs)
 //!   guardian check-ufvk --id N                # UFVK's ak == my group key; print first address
-//!   guardian serve --id N                     # HTTP on 127.0.0.1:710N
+//!   guardian make-auth-key --id N             # keys/guardian-N.auth: the secret shared with the
+//!                                             # processor that authenticates round requests
+//!   guardian serve --id N [--listen ADDR]     # 127.0.0.1:710N (MAINNET: 810N); TLS and request
+//!                                             # authentication when configured (see transport.rs;
+//!                                             # required on MAINNET)
 //!
-//! Files (under --dir, default devnet):
+//! ZEC_NETWORK=mainnet: addresses and the UFVK are mainnet, the default --dir is mainnet, --mint
+//! defaults to ZEC_MINT_URL in mainnet/.env and must be the mint's public https:// URL, TLS and
+//! request authentication are required, and every log line starts with MAINNET.
+//!
+//! Files (under --dir, default devnet or mainnet):
 //!   keys/guardian-N.key      this guardian's KeyPackage (secret; survives resets)
 //!   keys/frost-pubkeys.json  the group's public key package
 //!   keys/mint.ufvk           the reserve's UFVK (written by `zec-processor make-ufvk`)
-//!   keys/dkg/                DKG exchange; secret packages are deleted after part 3
+//!   dkg/{state,inbox,outbox} the ceremony's working files (see dkg.rs)
 //!   guardian-N.signed.json   quote id -> sighash signed (mint-DB state; reset with it)
 //! Nothing here generates keys implicitly: missing key files are a startup error.
+mod dkg;
 mod nonces;
 mod policy;
+mod transport;
 
 use std::{
-    collections::{BTreeMap, HashMap},
+    collections::HashMap,
     fs,
     path::{Path, PathBuf},
     sync::{Arc, Mutex},
@@ -33,10 +46,10 @@ use axum::{
 };
 use zcash_keys::keys::UnifiedAddressRequest;
 use zec_frost::{
-    MAX_SIGNERS, MIN_SIGNERS,
+    MAX_SIGNERS,
     redpallas::{
         self as frost, Identifier, SigningPackage,
-        keys::{KeyPackage, PublicKeyPackage, dkg},
+        keys::{KeyPackage, PublicKeyPackage},
     },
     wire::{Refusal, Round1Request, Round1Response, Round2Request, Round2Response, Status},
 };
@@ -49,23 +62,57 @@ const MAX_ACTIONS: usize = 64;
 struct Args {
     cmd: Vec<String>,
     id: u16,
+    threshold: Option<u16>,
+    participants: Option<u16>,
     dir: PathBuf,
     mint: String,
+    /// `serve`: address to listen on (default 127.0.0.1:710N, MAINNET 810N).
+    listen: Option<String>,
 }
 
 fn parse_args() -> Result<Args> {
-    let mut args = Args { cmd: vec![], id: 0, dir: "devnet".into(), mint: "http://127.0.0.1:8085".into() };
+    let network = zec_wallet::network::init()?;
+    let mut args = Args {
+        cmd: vec![],
+        id: 0,
+        threshold: None,
+        participants: None,
+        dir: network.state_dir().into(),
+        mint: format!("http://127.0.0.1:{}", network.port(8085)),
+        listen: None,
+    };
+    let mut mint_given = false;
     let mut it = std::env::args().skip(1);
     while let Some(a) = it.next() {
         match a.as_str() {
             "--id" => args.id = it.next().context("--id N")?.parse().context("--id must be 1..=3")?,
             "--dir" => args.dir = it.next().context("--dir PATH")?.into(),
-            "--mint" => args.mint = it.next().context("--mint URL")?,
+            "--threshold" => args.threshold = Some(it.next().context("--threshold T")?.parse().context("--threshold")?),
+            "--participants" => {
+                args.participants = Some(it.next().context("--participants N")?.parse().context("--participants")?)
+            }
+            "--mint" => {
+                args.mint = it.next().context("--mint URL")?;
+                mint_given = true;
+            }
+            // Empty means the default (systemd passes `--listen ""` if ZEC_GUARDIAN_LISTEN is unset).
+            "--listen" => args.listen = Some(it.next().context("--listen HOST:PORT")?).filter(|l| !l.is_empty()),
             _ => args.cmd.push(a),
         }
     }
     ensure!((1..=MAX_SIGNERS).contains(&args.id), "--id must be 1..={MAX_SIGNERS}");
+    if network.is_mainnet() && !mint_given {
+        // The mint's public URL, from this machine's mainnet/.env (never the devnet's .env).
+        args.mint = dotenv_value(&network.state_dir().join(".env"), "ZEC_MINT_URL").unwrap_or_default();
+    }
     Ok(args)
+}
+
+/// `KEY=value` from an env file (MAINNET guardians read mainnet/.env, never the devnet's .env).
+fn dotenv_value(path: &Path, key: &str) -> Option<String> {
+    std::fs::read_to_string(path).ok()?.lines().find_map(|l| {
+        l.trim().strip_prefix(key)?.strip_prefix('=').map(|v| v.trim().trim_matches('"').to_owned())
+    })
 }
 
 fn ident(id: u16) -> Result<Identifier> {
@@ -89,15 +136,24 @@ fn read_json<T: serde::de::DeserializeOwned>(path: &Path) -> Result<T> {
 #[tokio::main]
 async fn main() -> Result<()> {
     let args = parse_args()?;
-    // Size-capped: devnet/logs/guardian-N.log (+ rotated files), see the devlog crate.
-    devlog::init(&args.dir.join("logs"), &format!("guardian-{}", args.id), "info")?;
+    let network = zec_wallet::network::current();
+    if network.is_mainnet() {
+        eprintln!("guardian {}: *** MAINNET (real ZEC) *** keys in {}", args.id, keys_dir(&args).display());
+    }
+    // Size-capped: <dir>/logs/guardian-N.log (+ rotated files), see the devlog crate.
+    devlog::init_labeled(
+        &args.dir.join("logs"),
+        &format!("guardian-{}", args.id),
+        "info",
+        network.is_mainnet().then_some("MAINNET "),
+    )?;
     match args.cmd.iter().map(String::as_str).collect::<Vec<_>>().as_slice() {
-        ["dkg", "part1"] => dkg_part1(&args),
-        ["dkg", "part2"] => dkg_part2(&args),
-        ["dkg", "part3"] => dkg_part3(&args),
+        ["dkg"] => dkg::dkg(&args),
+        ["verify"] => dkg::verify(&args),
+        ["make-auth-key"] => transport::make_auth_key(&args),
         ["check-ufvk"] => check_ufvk(&args).map(|_| ()),
         ["serve"] => serve(args).await,
-        _ => bail!("usage: guardian --id N [--dir devnet] [--mint URL] <dkg part1|part2|part3|check-ufvk|serve>"),
+        _ => bail!("usage: guardian --id N [--dir devnet|mainnet] [--mint URL] <dkg --threshold 2 --participants 3|verify|make-auth-key|check-ufvk|serve>"),
     }
 }
 
@@ -105,10 +161,6 @@ async fn main() -> Result<()> {
 
 fn keys_dir(args: &Args) -> PathBuf {
     args.dir.join("keys")
-}
-
-fn dkg_dir(args: &Args) -> PathBuf {
-    keys_dir(args).join("dkg")
 }
 
 fn key_path(args: &Args) -> PathBuf {
@@ -120,62 +172,10 @@ fn read_key_file<T: serde::de::DeserializeOwned>(path: &Path, what: &str) -> Res
     ensure!(
         path.exists(),
         "{what} {} is missing. Keys are never generated implicitly: restore it, or create new \
-         keys with scripts/devnet-reset.sh --new-keys",
+         keys with scripts/devnet-reset.sh --new-keys (MAINNET: the DKG ceremony in docs/deploy-mainnet.md)",
         path.display()
     );
     read_json(path)
-}
-
-fn dkg_part1(args: &Args) -> Result<()> {
-    let (secret, package) = dkg::part1(ident(args.id)?, MAX_SIGNERS, MIN_SIGNERS, rand::thread_rng())?;
-    write_json(&dkg_dir(args).join(format!("r1-secret-{}.json", args.id)), &secret)?;
-    write_json(&dkg_dir(args).join(format!("r1-{}.json", args.id)), &package)?;
-    println!("guardian {}: DKG round 1 package published", args.id);
-    Ok(())
-}
-
-/// Everyone else's round-1 packages.
-fn others_r1(args: &Args) -> Result<BTreeMap<Identifier, dkg::round1::Package>> {
-    (1..=MAX_SIGNERS)
-        .filter(|&j| j != args.id)
-        .map(|j| Ok((ident(j)?, read_json(&dkg_dir(args).join(format!("r1-{j}.json")))?)))
-        .collect()
-}
-
-fn dkg_part2(args: &Args) -> Result<()> {
-    let secret_path = dkg_dir(args).join(format!("r1-secret-{}.json", args.id));
-    let (secret, packages) = dkg::part2(read_json(&secret_path)?, &others_r1(args)?)?;
-    write_json(&dkg_dir(args).join(format!("r2-secret-{}.json", args.id)), &secret)?;
-    fs::remove_file(&secret_path)?;
-    for (to, package) in packages {
-        let to: u16 = (1..=MAX_SIGNERS).find(|&j| ident(j).ok() == Some(to)).context("unknown recipient")?;
-        // Devnet: a shared directory stands in for the private channel to each peer.
-        write_json(&dkg_dir(args).join(format!("r2-{}-to-{to}.json", args.id)), &package)?;
-    }
-    println!("guardian {}: DKG round 2 packages sent", args.id);
-    Ok(())
-}
-
-fn dkg_part3(args: &Args) -> Result<()> {
-    let secret_path = dkg_dir(args).join(format!("r2-secret-{}.json", args.id));
-    let r2: BTreeMap<Identifier, dkg::round2::Package> = (1..=MAX_SIGNERS)
-        .filter(|&j| j != args.id)
-        .map(|j| Ok((ident(j)?, read_json(&dkg_dir(args).join(format!("r2-{j}-to-{}.json", args.id)))?)))
-        .collect::<Result<_>>()?;
-    let (key_package, pubkeys) = dkg::part3(&read_json(&secret_path)?, &others_r1(args)?, &r2)?;
-    write_json(&key_path(args), &key_package)?;
-    write_json(&dkg_dir(args).join(format!("pubkeys-{}.json", args.id)), &pubkeys)?;
-    fs::remove_file(&secret_path)?;
-    for j in (1..=MAX_SIGNERS).filter(|&j| j != args.id) {
-        let _ = fs::remove_file(dkg_dir(args).join(format!("r2-{j}-to-{}.json", args.id)));
-    }
-    println!(
-        "guardian {}: key share saved to {}; group key {}",
-        args.id,
-        key_path(args).display(),
-        hex::encode(zec_frost::group_key_bytes(&pubkeys)?)
-    );
-    Ok(())
 }
 
 // ---- keys ----
@@ -193,7 +193,7 @@ fn check_ufvk(args: &Args) -> Result<Keys> {
     let key: KeyPackage = read_key_file(&key_path(args), "key share")?;
     let pubkeys: PublicKeyPackage = read_key_file(&keys_dir(args).join("frost-pubkeys.json"), "group public keys")?;
     let ufvk_path = keys_dir(args).join("mint.ufvk");
-    ensure!(ufvk_path.exists(), "{} is missing (run scripts/devnet-reset.sh --new-keys)", ufvk_path.display());
+    ensure!(ufvk_path.exists(), "{} is missing: the processor host makes it from frost-pubkeys.json (`zec-processor make-ufvk`); copy it here (devnet: scripts/devnet-reset.sh --new-keys)", ufvk_path.display());
     let ufvk = zec_wallet::frost::read_ufvk(&ufvk_path)?;
     ensure!(key.verifying_key() == pubkeys.verifying_key(), "key share and frost-pubkeys.json disagree");
     ensure!(*key.identifier() == ident(args.id)?, "guardian-{}.key belongs to another guardian", args.id);
@@ -205,9 +205,10 @@ fn check_ufvk(args: &Args) -> Result<Keys> {
     let (ua, _) = ufvk
         .default_address(UnifiedAddressRequest::ORCHARD)
         .map_err(|e| anyhow!("address: {e:?}"))?;
-    let first_address = ua.encode(&zec_wallet::regtest::regtest_network());
-    println!("guardian {}: UFVK ak matches group key {}", args.id, hex::encode(group));
-    println!("guardian {}: mint address {first_address}", args.id);
+    let network = zec_wallet::network::current();
+    let first_address = ua.encode(&network.params());
+    println!("guardian {} ({}): UFVK ak matches group key {}", args.id, network.label(), hex::encode(group));
+    println!("guardian {} ({}): mint address {first_address}", args.id, network.label());
     let fvk = ufvk.orchard().context("UFVK has no Orchard key")?.clone();
     Ok(Keys { key, pubkeys, fvk, first_address })
 }
@@ -218,6 +219,9 @@ struct Guardian {
     id: u16,
     keys: Keys,
     mint: String,
+    /// Fetches quotes from the mint: web roots, plus ZEC_MINT_CA if set (a private CA in front of
+    /// the mint, e.g. staging).
+    mint_client: zec_frost::wire::Client,
     nonces: Mutex<Nonces>,
     signed_path: PathBuf,
     /// quote id -> hex sighash this guardian signed for it.
@@ -227,14 +231,27 @@ struct Guardian {
 type Shared = Arc<Guardian>;
 
 async fn serve(args: Args) -> Result<()> {
+    // Transport requirements first: on MAINNET a guardian without TLS or request auth never starts.
+    let mint = args.mint.trim_end_matches('/').to_owned();
+    let security = transport::load(&args, &mint)?;
     let keys = check_ufvk(&args)?;
     let signed_path = args.dir.join(format!("guardian-{}.signed.json", args.id));
     let signed = if signed_path.exists() { read_json(&signed_path)? } else { HashMap::new() };
-    let addr = format!("127.0.0.1:{}", 7100 + args.id);
+    let addr = args
+        .listen
+        .clone()
+        .unwrap_or_else(|| format!("127.0.0.1:{}", zec_wallet::network::current().port(7100 + args.id)));
+    let network = zec_wallet::network::current();
+    let mint_ca = std::env::var("ZEC_MINT_CA").ok().filter(|v| !v.is_empty()).or_else(|| {
+        network.is_mainnet().then(|| dotenv_value(&network.state_dir().join(".env"), "ZEC_MINT_CA")).flatten()
+    });
+    let mint_ca = mint_ca.filter(|v| !v.is_empty()); // `ZEC_MINT_CA=` means none
+    let mint_client = zec_frost::wire::Client::with_ca(mint_ca.as_deref().map(Path::new))?;
     let g = Arc::new(Guardian {
         id: args.id,
         keys,
-        mint: args.mint.trim_end_matches('/').to_owned(),
+        mint,
+        mint_client,
         nonces: Mutex::new(Nonces::default()),
         signed_path,
         signed: Mutex::new(signed),
@@ -248,14 +265,29 @@ async fn serve(args: Args) -> Result<()> {
         }
     });
 
+    let auth = Arc::new(transport::AuthState {
+        key: security.auth,
+        verifier: Mutex::new(zec_frost::wire::auth::Verifier::default()),
+        guardian: g.id,
+    });
+    let authenticated = auth.key.is_some();
+    // Round requests pass the authentication layer first: an unauthenticated request is refused
+    // before round1 can generate a nonce. /status (public information) stays open.
     let app = Router::new()
         .route("/round1", post(round1))
         .route("/round2", post(round2))
+        .route_layer(axum::middleware::from_fn_with_state(auth, transport::authenticate))
         .route("/status", get(status))
         .with_state(g.clone());
     let listener = tokio::net::TcpListener::bind(&addr).await.with_context(|| format!("cannot bind {addr}"))?;
-    tracing::info!(guardian = g.id, %addr, mint = %g.mint, address = %g.keys.first_address, "guardian serving");
-    axum::serve(listener, app).await?;
+    tracing::info!(
+        guardian = g.id, %addr, tls = security.tls.is_some(), authenticated, mint = %g.mint,
+        address = %g.keys.first_address, "guardian serving"
+    );
+    match security.tls {
+        Some(tls) => axum::serve(transport::TlsListener::new(listener, tls), app).await?,
+        None => axum::serve(listener, app).await?,
+    }
     Ok(())
 }
 
@@ -313,7 +345,7 @@ async fn sign_round2(g: &Guardian, req: &Round2Request, nonces: Vec<frost::round
 
     // a. Ask the mint, not the coordinator, what this quote is.
     let url = format!("{}/v1/melt/quote/zec/{}", g.mint, req.quote_id);
-    let quote: MintQuote = zec_frost::wire::get_json(&url, Duration::from_secs(20)).await.context("(a) mint quote")?;
+    let quote: MintQuote = g.mint_client.get_json(&url, Duration::from_secs(20)).await.context("(a) mint quote")?;
     let receiver = zec_wallet::frost::orchard_receiver(&quote.request).context("(b) quote address")?;
 
     let packages: Vec<SigningPackage> = req

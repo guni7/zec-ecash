@@ -23,7 +23,7 @@ zcash_proofs = { version = "0.30.0", features = ["bundled-prover"] }   # same tr
 secrecy = "0.8"   # SecretVec type used by zcash_client_sqlite 0.22
 # Named in zec-wallet signatures; must match what zcash_client_sqlite / zcash_client_backend use.
 rusqlite = "0.37"
-tonic = "0.14"
+tonic = { version = "0.14", features = ["tls-webpki-roots", "tls-ring"] }
 zip32 = "0.2.1"   # must match what zcash_keys uses (0.3 causes an AccountId type mismatch)
 # FROST over RedPallas
 reddsa = { version = "0.5", features = ["frost"] }
@@ -40,7 +40,13 @@ pasta_curves = "0.5"
 serde = { version = "1", features = ["derive"] }
 # HTTP for the guardian protocol; versions already locked via tonic.
 axum = "0.8"
-hyper = "1"
+hyper = { version = "1", features = ["client", "http1"] }
+# Guardian transport: HMAC-SHA256 request auth and TLS (rustls with ring, as tonic uses).
+sha2 = "0.10"
+hmac = "0.12"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12", "logging"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12", "logging"] }
+webpki-roots = "1"
 hyper-util = { version = "0.1", features = ["client-legacy", "http1", "tokio"] }
 http-body-util = "0.1"
 # Terminal QR codes for ecash tokens (zec-ecash-cli).

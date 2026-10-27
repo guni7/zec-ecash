@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+zec-network = { path = "../zec-network" }
 zcash_client_backend.workspace = true
 zcash_client_sqlite.workspace = true
 zcash_keys.workspace = true

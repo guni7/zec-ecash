@@ -56,6 +56,64 @@ pub fn read_mint_ledger(path: &Path, unit: &str) -> Result<MintLedger> {
     Ok(MintLedger { issued: n(issued)?, redeemed: n(redeemed)?, pending_melt: n(pending_melt)? })
 }
 
+/// Why a deposit quote is refused. The mint shows every refusal as "Invalid payment request",
+/// so this is also served at `/deposit-quote` for wallets to ask.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum DepositRefusal {
+    AmountOutOfRange { amount: u64, min: u64, max: u64 },
+    /// The reserve invariant fails (see [`ReserveStatus`]).
+    ReserveViolated { reserve: u64, required: u64 },
+    /// reserve + open quotes + this amount would pass ZEC_MAX_RESERVE.
+    ReserveCap { cap: u64, reserve: u64, open_quotes: u64, amount: u64 },
+    /// The check itself could not run.
+    CheckFailed(String),
+}
+
+impl DepositRefusal {
+    pub fn code(&self) -> &'static str {
+        match self {
+            Self::AmountOutOfRange { .. } => "amount_out_of_range",
+            Self::ReserveViolated { .. } => "reserve_violated",
+            Self::ReserveCap { .. } => "reserve_cap",
+            Self::CheckFailed(_) => "check_failed",
+        }
+    }
+}
+
+impl std::fmt::Display for DepositRefusal {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::AmountOutOfRange { amount, min, max } => {
+                write!(f, "amount {amount} zat is outside the mint's deposit limits ({min}..={max} zat)")
+            }
+            Self::ReserveViolated { reserve, required } => write!(
+                f,
+                "deposits are paused: the confirmed reserve ({reserve} zat) is below outstanding ecash plus \
+                 withdrawals in flight ({required} zat); see /reserves"
+            ),
+            Self::ReserveCap { cap, reserve, open_quotes, amount } => write!(
+                f,
+                "reserve cap reached: the reserve holds {reserve} zat and open deposit quotes could add \
+                 {open_quotes} zat, so {amount} zat more would pass the mint's cap of {cap} zat \
+                 (ZEC_MAX_RESERVE); at most {} zat can be deposited now",
+                cap.saturating_sub(reserve.saturating_add(*open_quotes))
+            ),
+            Self::CheckFailed(e) => write!(f, "the deposit check could not run: {e}"),
+        }
+    }
+}
+
+impl std::error::Error for DepositRefusal {}
+
+/// The cap rule: refuse when `reserve` (everything the wallet holds on chain) plus what open
+/// quotes could still bring in plus `amount` would exceed `cap`.
+pub fn check_cap(cap: u64, reserve: u64, open_quotes: u64, amount: u64) -> Result<(), DepositRefusal> {
+    if reserve.saturating_add(open_quotes).saturating_add(amount) > cap {
+        return Err(DepositRefusal::ReserveCap { cap, reserve, open_quotes, amount });
+    }
+    Ok(())
+}
+
 /// Amount + fee of every withdrawal that has a built transaction not yet mined.
 pub fn in_flight(store: &QuoteStore) -> Result<u64> {
     use WithdrawalState::*;
@@ -84,6 +142,27 @@ pub struct ReserveStatus {
     pub min_confirmations: u32,
     /// Unix seconds.
     pub checked_at: u64,
+    /// Withdrawals the processor gave up on; a person must act (see `zec-processor resolve`).
+    /// Public, so no address, txid or reason: those are in the processor log (CRITICAL) and in
+    /// `zec-processor operator-actions` on the mint host.
+    pub operator_action: Vec<OperatorAction>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct OperatorAction {
+    pub quote_id: String,
+    pub amount_zats: u64,
+    /// Unix seconds the row was flagged.
+    pub flagged_at: u64,
+}
+
+/// Rows flagged in the store, for [`ReserveStatus::operator_action`].
+pub fn operator_actions(store: &QuoteStore) -> Result<Vec<OperatorAction>> {
+    Ok(store
+        .needing_operator_action()?
+        .into_iter()
+        .map(|w| OperatorAction { quote_id: w.quote_id, amount_zats: w.amount_zats, flagged_at: w.updated_at })
+        .collect())
 }
 
 pub fn evaluate(
@@ -107,6 +186,7 @@ pub fn evaluate(
         chain_height,
         min_confirmations,
         checked_at,
+        operator_action: vec![],
     }
 }
 
@@ -116,6 +196,19 @@ pub struct ReserveMonitor {
     inner: Arc<RwLock<Monitor>>,
 }
 
+/// Whether one guardian answered its last `/status` probe (public in `/reserves`: no URL, no
+/// error text, so nothing about where the guardians are).
+#[derive(Clone, Debug, Serialize)]
+pub struct GuardianHealth {
+    /// The guardian's position in ZEC_GUARDIANS (= its FROST id).
+    pub id: usize,
+    pub up: bool,
+    /// It answered as the right guardian id with the group key the reserve uses.
+    pub key_ok: bool,
+    /// Unix seconds of the last answer, if it ever answered.
+    pub last_seen: Option<u64>,
+}
+
 #[derive(Default)]
 struct Monitor {
     last: Option<ReserveStatus>,
@@ -123,6 +216,8 @@ struct Monitor {
     error: Option<String>,
     /// When a violation was last logged (unix seconds), to repeat it once a minute, not every pass.
     last_alarm: u64,
+    guardians: Vec<GuardianHealth>,
+    guardians_checked_at: Option<u64>,
 }
 
 /// How often a continuing violation is logged again.
@@ -164,6 +259,18 @@ impl ReserveMonitor {
         m.error = Some(error);
     }
 
+    /// Stores the latest guardian probe (keeps each guardian's last_seen across failed probes).
+    pub async fn record_guardians(&self, mut probe: Vec<GuardianHealth>, checked_at: u64) {
+        let mut m = self.inner.write().await;
+        for g in &mut probe {
+            if g.last_seen.is_none() {
+                g.last_seen = m.guardians.iter().find(|o| o.id == g.id).and_then(|o| o.last_seen);
+            }
+        }
+        m.guardians = probe;
+        m.guardians_checked_at = Some(checked_at);
+    }
+
     /// `Some(status)` if the last completed check failed. A check that could not run does not
     /// block quotes (the last completed result still applies).
     pub async fn violation(&self) -> Option<ReserveStatus> {
@@ -173,25 +280,36 @@ impl ReserveMonitor {
 
 #[derive(Serialize)]
 struct Body {
-    /// "ok", "violated" or "unknown" (no completed check yet).
+    /// "violated", "operator_action_required" (invariant holds, but a withdrawal needs a
+    /// person), "ok", or "unknown" (no completed check yet).
     state: &'static str,
     #[serde(flatten)]
     status: Option<ReserveStatus>,
     #[serde(skip_serializing_if = "Option::is_none")]
     error: Option<String>,
+    guardians: Vec<GuardianHealth>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    guardians_checked_at: Option<u64>,
 }
 
 impl ReserveMonitor {
-    /// The `/reserves` response: 200 when ok, 503 when violated or not yet checked.
+    /// The `/reserves` response: 200 when ok, 503 otherwise.
     pub async fn report(&self) -> (StatusCode, Json<serde_json::Value>) {
         let m = self.inner.read().await;
         let state = match &m.last {
-            Some(s) if s.ok => "ok",
-            Some(_) => "violated",
+            Some(s) if !s.ok => "violated",
+            Some(s) if !s.operator_action.is_empty() => "operator_action_required",
+            Some(_) => "ok",
             None => "unknown",
         };
         let code = if state == "ok" { StatusCode::OK } else { StatusCode::SERVICE_UNAVAILABLE };
-        let body = Body { state, status: m.last.clone(), error: m.error.clone() };
+        let body = Body {
+            state,
+            status: m.last.clone(),
+            error: m.error.clone(),
+            guardians: m.guardians.clone(),
+            guardians_checked_at: m.guardians_checked_at,
+        };
         (code, Json(serde_json::to_value(body).unwrap_or_default()))
     }
 }
@@ -199,6 +317,20 @@ impl ReserveMonitor {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn public_report_has_no_withdrawal_details() {
+        let monitor = ReserveMonitor::default();
+        let mut status = evaluate(100, MintLedger::default(), 0, 10, 1, 1_000);
+        status.operator_action = vec![OperatorAction { quote_id: "q1".into(), amount_zats: 5_000, flagged_at: 999 }];
+        monitor.record(status).await;
+        let (_, axum::Json(v)) = monitor.report().await;
+        assert_eq!(v["state"], "operator_action_required");
+        let a = &v["operator_action"][0];
+        assert_eq!((a["quote_id"].as_str(), a["amount_zats"].as_u64(), a["flagged_at"].as_u64()), (Some("q1"), Some(5_000), Some(999)));
+        let text = v.to_string();
+        assert!(!text.contains("address") && !text.contains("txid") && !text.contains("reason"), "{text}");
+    }
     use crate::{
         store::MinedAt,
         withdraw::{BuiltTx, Reserve, make_payment},
@@ -207,6 +339,17 @@ mod tests {
 
     fn ledger(issued: u64, redeemed: u64, pending_melt: u64) -> MintLedger {
         MintLedger { issued, redeemed, pending_melt }
+    }
+
+    #[test]
+    fn cap_counts_reserve_open_quotes_and_the_new_amount() {
+        assert!(check_cap(1_000_000, 900_000, 50_000, 50_000).is_ok(), "exactly at the cap is fine");
+        let e = check_cap(1_000_000, 900_000, 50_000, 50_001).unwrap_err();
+        assert_eq!(e, DepositRefusal::ReserveCap { cap: 1_000_000, reserve: 900_000, open_quotes: 50_000, amount: 50_001 });
+        assert!(e.to_string().contains("at most 50000 zat can be deposited now"), "{e}");
+        assert!(check_cap(1_000_000, 1_200_000, 0, 1).is_err(), "already over: nothing more");
+        let e = check_cap(u64::MAX - 1, u64::MAX, 1, 1).unwrap_err();
+        assert!(e.to_string().contains("at most 0 zat"), "no overflow: {e}");
     }
 
     #[test]

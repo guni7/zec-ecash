@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2024"
 
 [dependencies]
+zec-network = { path = "../zec-network" }
 cdk.workspace = true
 cdk-redb.workspace = true
 cdk-common.workspace = true

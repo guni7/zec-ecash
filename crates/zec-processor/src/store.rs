@@ -63,6 +63,8 @@ impl QuoteStore {
              -- UNPAID -> BUILT -> SIGNING -> BROADCAST -> MINED, or -> FAILED.
              -- mined_height/mined_block_hash: where the node last had the tx mined (NULL while
              -- unmined, and again after a reorg drops that block).
+             -- operator_action: set when the processor gave up on a row and a person must act
+             -- (a PAID withdrawal reorged out and expired unmined: the user was never paid).
              CREATE TABLE IF NOT EXISTS zec_withdrawal (
                  quote_id      TEXT PRIMARY KEY,
                  address       TEXT NOT NULL,
@@ -74,7 +76,8 @@ impl QuoteStore {
                  expiry_height INTEGER,
                  updated_at    INTEGER NOT NULL,
                  mined_height     INTEGER,
-                 mined_block_hash TEXT
+                 mined_block_hash TEXT,
+                 operator_action  TEXT
              );",
         )?;
         // Databases created before reorg tracking lack the last two columns.
@@ -86,6 +89,12 @@ impl QuoteStore {
                 "ALTER TABLE zec_withdrawal ADD COLUMN mined_height INTEGER;
                  ALTER TABLE zec_withdrawal ADD COLUMN mined_block_hash TEXT;",
             )?;
+        }
+        let has_action: bool = conn
+            .prepare("SELECT 1 FROM pragma_table_info('zec_withdrawal') WHERE name = 'operator_action'")?
+            .exists([])?;
+        if !has_action {
+            conn.execute_batch("ALTER TABLE zec_withdrawal ADD COLUMN operator_action TEXT;")?;
         }
         Ok(QuoteStore { conn: Mutex::new(conn) })
     }
@@ -125,6 +134,19 @@ impl QuoteStore {
         let quote = get_quote(&tx, quote_id)?.context("quote vanished after insert")?;
         tx.commit()?;
         Ok(quote)
+    }
+
+    /// What open deposit quotes could still bring in: for every quote not yet paid and not
+    /// expired at `now` (unix seconds), its amount minus what it has received so far.
+    pub fn open_deposit_zats(&self, now: u64) -> Result<u64> {
+        let conn = self.conn.lock().unwrap();
+        let sum: i64 = conn.query_row(
+            "SELECT COALESCE(SUM(MAX(amount_zats - received_zats, 0)), 0) FROM zec_deposit_address
+             WHERE paid_emitted = 0 AND expires_at > ?1",
+            [now as i64],
+            |r| r.get(0),
+        )?;
+        Ok(sum.max(0) as u64)
     }
 
     pub fn quote(&self, quote_id: &str) -> Result<Option<Quote>> {
@@ -237,6 +259,8 @@ pub struct Withdrawal {
     pub updated_at: u64,
     /// Where the node last had the transaction mined; `None` while unmined.
     pub mined_at: Option<MinedAt>,
+    /// Why a person must act on this row; the processor no longer retries it.
+    pub operator_action: Option<String>,
 }
 
 /// A block a withdrawal's transaction was seen mined in.
@@ -254,9 +278,12 @@ fn now() -> i64 {
         .unwrap_or(0)
 }
 
+/// Prefix `resolve_operator_action` puts on `operator_action`.
+const RESOLVED: &str = "resolved by operator: ";
+
 const WITHDRAWAL_COLUMNS: &str =
     "quote_id, address, amount_zats, fee_zats, state, pczt_blob, txid, expiry_height, updated_at, \
-     mined_height, mined_block_hash";
+     mined_height, mined_block_hash, operator_action";
 
 fn row_to_withdrawal(r: &rusqlite::Row) -> rusqlite::Result<(Withdrawal, String)> {
     Ok((
@@ -274,6 +301,7 @@ fn row_to_withdrawal(r: &rusqlite::Row) -> rusqlite::Result<(Withdrawal, String)
                 (Some(height), Some(block_hash)) => Some(MinedAt { height, block_hash }),
                 _ => None,
             },
+            operator_action: r.get(11)?,
         },
         r.get(4)?,
     ))
@@ -349,6 +377,35 @@ impl QuoteStore {
              WHERE quote_id = ?1 AND state = 'SIGNING'",
             params![quote_id, txid, now()],
         )? == 1)
+    }
+
+    /// Flags a row for a person (see `operator_action`). Returns whether the row exists.
+    pub fn set_operator_action(&self, quote_id: &str, reason: Option<&str>) -> Result<bool> {
+        let conn = self.conn.lock().unwrap();
+        Ok(conn.execute(
+            "UPDATE zec_withdrawal SET operator_action = ?2, updated_at = ?3 WHERE quote_id = ?1",
+            params![quote_id, reason, now()],
+        )? == 1)
+    }
+
+    /// Rows flagged for a person and not yet resolved.
+    pub fn needing_operator_action(&self) -> Result<Vec<Withdrawal>> {
+        Ok(self
+            .withdrawals_in(&[WithdrawalState::Mined, WithdrawalState::Broadcast, WithdrawalState::Failed])?
+            .into_iter()
+            .filter(|w| w.operator_action.as_deref().is_some_and(|a| !a.starts_with(RESOLVED)))
+            .collect())
+    }
+
+    /// Marks a flagged row as dealt with. It stays out of the watcher (never retried) and off
+    /// `/reserves`. Returns the original reason, or `None` if the row was not flagged.
+    pub fn resolve_operator_action(&self, quote_id: &str) -> Result<Option<String>> {
+        let Some(reason) = self.withdrawal(quote_id)?.and_then(|w| w.operator_action) else { return Ok(None) };
+        if reason.starts_with(RESOLVED) {
+            return Ok(None);
+        }
+        self.set_operator_action(quote_id, Some(&format!("{RESOLVED}{reason}")))?;
+        Ok(Some(reason))
     }
 
     /// Records (or with `None`, clears) the block the withdrawal's transaction is mined in.

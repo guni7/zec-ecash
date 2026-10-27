@@ -1,0 +1,58 @@
+# MAINNET: Caddy in front of the mint host (real ZEC). Caddy gets and renews the certificate
+# itself (Let's Encrypt), so port 443 (and 80 for the ACME challenge) must reach it.
+# Copy to /etc/caddy/Caddyfile, replace mint.example.com, then `systemctl reload caddy`.
+#
+# Public on https://mint.example.com:
+#   /mint/*            cdk-mintd (127.0.0.1:9085); wallets and tokens use https://mint.example.com/mint
+#   /reserves, /deposit-quote, /withdrawal-quote   zec-processor's status port (127.0.0.1:9095)
+#   /pos/*             the NUT-18 point of sale (127.0.0.1:9090), only if you run it
+#   /                  the web wallet, built with ZEC_NETWORK=mainnet (docs/deploy-mainnet.md)
+# Never exposed: the processor's gRPC (51051, mintd only) and the guardians (810N: reachable only
+# from the processor's IP, over their own TLS; see the firewall section of the deploy doc).
+# mintd/config.mainnet.toml [info] url and mainnet/.env ZEC_MINT_URL must both be
+# https://mint.example.com/mint (the guardians check quotes there too).
+
+mint.example.com {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "no-referrer"
+		# The page talks only to this origin; camera for QR scanning.
+		Content-Security-Policy "default-src 'self'; img-src 'self' data: blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'"
+		Permissions-Policy "camera=(self)"
+		-Server
+	}
+
+	# cdk-mintd (HTTP + NUT-17 websockets) under /mint.
+	handle_path /mint/* {
+		reverse_proxy 127.0.0.1:9085
+	}
+
+	# zec-processor status endpoints (JSON, read-only).
+	@status path /reserves /deposit-quote /withdrawal-quote
+	handle @status {
+		reverse_proxy 127.0.0.1:9095
+	}
+
+	# Optional: the point of sale.
+	handle_path /pos/* {
+		reverse_proxy 127.0.0.1:9090
+	}
+
+	# The web wallet (static build). Keep it under its own directory, owned by root.
+	handle {
+		root * /srv/zec-ecash/web
+		try_files {path} /index.html
+		file_server
+	}
+
+	log {
+		output file /var/log/caddy/zec-ecash.log {
+			roll_size 10MiB
+			roll_keep 5
+		}
+	}
+}

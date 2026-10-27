@@ -15,18 +15,25 @@ use zec_frost::{
         round1::SigningCommitments,
         round2::SignatureShare,
     },
-    wire::{Round1Request, Round1Response, Round2Request, Round2Response, get_json, post_json},
+    wire::{Client, Round1Request, Round1Response, Round2Request, Round2Response},
 };
 use zec_wallet::{Pczt, Signer, frost as pczt_frost};
 
+/// One guardian: its base URL, and a client that trusts its certificate and signs its requests
+/// with its secret (see `zec_frost::wire::auth`).
+pub struct Endpoint {
+    pub url: String,
+    pub client: Client,
+}
+
 pub struct FrostSigner {
-    guardians: Vec<String>,
+    guardians: Vec<Endpoint>,
     pubkeys: PublicKeyPackage,
     timeout: Duration,
 }
 
 impl FrostSigner {
-    pub fn new(guardians: Vec<String>, pubkeys_path: &Path, timeout: Duration) -> Result<Self> {
+    pub fn new(guardians: Vec<Endpoint>, pubkeys_path: &Path, timeout: Duration) -> Result<Self> {
         let pubkeys: PublicKeyPackage = serde_json::from_slice(
             &std::fs::read(pubkeys_path).with_context(|| format!("cannot read {}", pubkeys_path.display()))?,
         )
@@ -41,12 +48,29 @@ impl FrostSigner {
 
     /// Logs which guardians answer right now (informational; signing tolerates one being down).
     pub async fn log_guardians(&self) {
-        for url in &self.guardians {
-            match get_json::<zec_frost::wire::Status>(&format!("{url}/status"), Duration::from_secs(3)).await {
+        for g in &self.guardians {
+            let url = &g.url;
+            match g.client.get_json::<zec_frost::wire::Status>(&format!("{url}/status"), Duration::from_secs(3)).await {
                 Ok(s) => tracing::info!(%url, guardian = s.guardian, group_key = %s.group_key, "guardian up"),
                 Err(e) => tracing::warn!(%url, "guardian not reachable: {e:#}"),
             }
         }
+    }
+
+    /// Asks every guardian for `/status` once (for `/reserves`): up, and answering as the
+    /// guardian at its position with this reserve's group key.
+    pub async fn probe(&self, now: u64) -> Vec<crate::reserves::GuardianHealth> {
+        let group_key = self.group_key().map(hex::encode).unwrap_or_default();
+        let mut out = Vec::with_capacity(self.guardians.len());
+        for (i, g) in self.guardians.iter().enumerate() {
+            let got = g.client.get_json::<zec_frost::wire::Status>(&format!("{}/status", g.url), Duration::from_secs(3)).await;
+            let (up, key_ok) = match &got {
+                Ok(s) => (true, usize::from(s.guardian) == i + 1 && s.group_key == group_key),
+                Err(_) => (false, false),
+            };
+            out.push(crate::reserves::GuardianHealth { id: i + 1, up, key_ok, last_seen: up.then_some(now) });
+        }
+        out
     }
 
     fn identifier(&self, guardian: u16) -> Result<Identifier> {
@@ -71,17 +95,18 @@ impl Signer for FrostSigner {
         let mut pending: FuturesUnordered<_> = self
             .guardians
             .iter()
-            .map(|url| {
+            .map(|g| {
                 let req = &req;
                 async move {
-                    let r: Result<Round1Response> = post_json(&format!("{url}/round1"), req, self.timeout).await;
-                    (url.clone(), r)
+                    let r: Result<Round1Response> = g.client.post_json(&format!("{}/round1", g.url), req, self.timeout).await;
+                    (g, r)
                 }
             })
             .collect();
-        let mut chosen: Vec<(String, Identifier, Vec<SigningCommitments>)> = vec![];
+        let mut chosen: Vec<(&Endpoint, Identifier, Vec<SigningCommitments>)> = vec![];
         let mut problems = vec![];
-        while let Some((url, r)) = pending.next().await {
+        while let Some((g, r)) = pending.next().await {
+            let url = &g.url;
             match r.and_then(|r| {
                 ensure!(r.commitments.len() == spends.len(), "{} commitments for {} spends", r.commitments.len(), spends.len());
                 let commitments = r
@@ -92,7 +117,7 @@ impl Signer for FrostSigner {
                 Ok((self.identifier(r.guardian)?, commitments))
             }) {
                 Ok((id, commitments)) if !chosen.iter().any(|(_, i, _)| *i == id) => {
-                    chosen.push((url, id, commitments));
+                    chosen.push((g, id, commitments));
                     if chosen.len() == zec_frost::MIN_SIGNERS as usize {
                         break;
                     }
@@ -111,7 +136,7 @@ impl Signer for FrostSigner {
                 problems.join("; ")
             );
         }
-        tracing::info!(%quote_id, %session, guardians = ?chosen.iter().map(|c| &c.0).collect::<Vec<_>>(), "FROST round 1 done");
+        tracing::info!(%quote_id, %session, guardians = ?chosen.iter().map(|c| &c.0.url).collect::<Vec<_>>(), "FROST round 1 done");
 
         // One signing package per spend, over the shielded sighash.
         let packages: Vec<SigningPackage> = (0..spends.len())
@@ -129,10 +154,11 @@ impl Signer for FrostSigner {
 
         // Round 2: both chosen guardians must sign (each verifies the withdrawal itself).
         let n_spends = spends.len();
-        let results = futures::future::join_all(chosen.iter().map(|(url, id, _)| {
+        let results = futures::future::join_all(chosen.iter().map(|(g, id, _)| {
             let req = &req;
             async move {
-                let r: Round2Response = post_json(&format!("{url}/round2"), req, self.timeout)
+                let url = &g.url;
+                let r: Round2Response = g.client.post_json(&format!("{url}/round2"), req, self.timeout)
                     .await
                     .with_context(|| format!("guardian {url} did not sign"))?;
                 ensure!(self.identifier(r.guardian)? == *id, "{url} answered as a different guardian");

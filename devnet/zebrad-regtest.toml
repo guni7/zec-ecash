@@ -27,7 +27,7 @@ cache_dir = "./devnet/zebra-state"
 ephemeral = false
 
 [rpc]
-listen_addr = "127.0.0.1:18232"        # JSON-RPC: generate, getblockcount, sendrawtransaction
+listen_addr = "127.0.0.1:18232"        # JSON-RPC: only devnet/mine.sh (generate); everything else uses the gRPC below
 enable_cookie_auth = false             # local only; never expose this port
 lightwalletd_listen_addr = "127.0.0.1:9067"   # built-in light-wallet gRPC (experimental, plaintext)
 

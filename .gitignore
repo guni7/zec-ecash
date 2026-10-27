@@ -1,43 +1,67 @@
 # Note: git has no trailing comments; a "#" after a pattern becomes part of the pattern.
+# Nothing secret, machine-specific or generated is ever committable (docs/deploy-mainnet.md,
+# "Never commit"). The server checkout is deploy-only: never git add or commit there.
 
 # Build output
 target/
+node_modules/
+web/node_modules/
+web/node_modules/.vite*
+web/dist/
+web/dist-mainnet/
 
-# Secrets and local config
+# Secrets: env files anywhere (the commented *.env.example templates are the exception)
 .env
 .env.*
+*.env
+**/.env
 !.env.example
-# Everything that must survive a devnet reset: guardian FROST key shares (secret), wallet
-# seeds (secret), the group public keys and the mint UFVK. The CDK mint mnemonic is in .env.
+!*.env.example
+
+# Secrets: keys, seeds, auth secrets, CA keys, DKG files
+# devnet/keys/: guardian FROST key shares and wallet seeds (secret), group public keys, mint UFVK.
 devnet/keys/
-# any other wallet seed
+*.key
+*.auth
 *.seed
+*.gpg
+*-key.pem
+rootCA-key.pem
+guardian-ca.key
+**/dkg/
 # per-quote guardian signing records (reset together with the mint DB)
 devnet/guardian-*.signed.json
+# point of sale state: wallet, requests, admin socket, and swept tokens (spendable ecash)
+devnet/pos/
+*.token
+
+# MAINNET state, all of it (keys, ca/, mint/, DBs, logs, dkg/, judge-kit/, .env): never committed,
+# never touched by scripts/devnet-reset.sh.
+mainnet/
+
+# Demo web wallet: mkcert TLS key/certs (machine-specific)
+web/certs/
 
 # Wallet, mint and processor databases (SQLite incl. WAL/SHM/journal sidecars, redb)
 *.sqlite
-*.sqlite-shm
-*.sqlite-wal
-*.sqlite-journal
+*.sqlite-*
+*.db
 *.redb
 
 # Devnet runtime state: Zebra regtest chain, cdk-mintd work dir (the only mint DB; see
-# README), retired mint DBs and wallet backups, logs, scratch output
+# README), retired mint DBs and wallet backups, scratch output
 devnet/zebra-state/
 devnet/mint/
 devnet/archive/
-devnet/*.log
-devnet/logs/
 devnet/quote.json
 
-# Demo web wallet: dependencies, build output, and the mkcert TLS key/certs (machine-specific)
-web/node_modules/
-web/dist/
-web/certs/
+# Logs
+*.log
+*.log.*
+logs/
 
 # OS / editor
 .DS_Store
+*.swp
 .idea/
 .vscode/
-*.swp

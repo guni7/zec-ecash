@@ -1,9 +1,11 @@
-//! Regtest Zcash wallet shared by `devwallet` and (later) zec-processor's reserve wallet.
-//! NOT for real funds: network parameters are always `regtest::regtest_network()`.
+//! Zcash wallet shared by `devwallet` and zec-processor's reserve wallet.
+//! Network parameters come from [`network::params`] (`ZEC_NETWORK`: the regtest devnet's
+//! `network::params()`, or mainnet).
 //!
-//! Talks to Zebra's built-in light-wallet gRPC server (plaintext) and keeps its state in a
-//! zcash_client_sqlite database next to the seed file.
+//! Talks to a light-wallet gRPC server (Zebra's built-in one on the devnet, plaintext; a remote
+//! one over TLS on mainnet) and keeps its state in a zcash_client_sqlite database.
 pub mod frost;
+pub use zec_network as network;
 pub mod regtest;
 mod signer;
 
@@ -41,23 +43,19 @@ use zcash_proofs::prover::LocalTxProver;
 use zcash_protocol::{
     PoolType, ShieldedPool,
     consensus::{BlockHeight, BranchId, COINBASE_MATURITY_BLOCKS},
-    local_consensus::LocalNetwork,
     value::Zatoshis,
 };
 use zip32::AccountId;
 
 pub use zcash_protocol::TxId;
 
-/// Default depth before a note counts as spendable: 1, so one `./devnet/mine.sh 1` after a send
-/// is enough on regtest. Change it with [`Wallet::set_min_confirmations`].
-const DEFAULT_MIN_CONFIRMATIONS: u32 = 1;
 
 /// Owner of the locks that keep immature coinbase notes out of note selection and out of the
 /// spendable balance (see [`Wallet::lock_immature_coinbase`]).
 const COINBASE_LOCK: LockOwner = LockOwner::new(*b"zec-wallet: immature coinbase   ");
 const SYNC_BATCH_SIZE: u32 = 1000;
 
-type Db = WalletDb<rusqlite::Connection, LocalNetwork, SystemClock, OsRng>;
+type Db = WalletDb<rusqlite::Connection, network::Params, SystemClock, OsRng>;
 type DbAccountId = <Db as WalletRead>::AccountId;
 
 /// Writes a new random 32-byte seed (hex) to `seed_path`. Refuses to overwrite one.
@@ -70,11 +68,7 @@ pub fn create_seed(seed_path: &Path) -> Result<()> {
     }
     let mut seed = [0u8; 32];
     OsRng.fill_bytes(&mut seed);
-    if let Some(dir) = seed_path.parent() {
-        fs::create_dir_all(dir)?;
-    }
-    fs::write(seed_path, hex::encode(seed))?;
-    Ok(())
+    network::write_secret(seed_path, &hex::encode(seed))
 }
 
 /// The wallet's address straight from the seed, without a DB or a node.
@@ -89,7 +83,7 @@ fn read_seed(seed_path: &Path) -> Result<Vec<u8>> {
 }
 
 fn spending_key(seed: &[u8]) -> Result<UnifiedSpendingKey> {
-    UnifiedSpendingKey::from_seed(&regtest::regtest_network(), seed, AccountId::ZERO)
+    UnifiedSpendingKey::from_seed(&network::params(), seed, AccountId::ZERO)
         .map_err(|e| anyhow!("key derivation failed: {e:?}"))
 }
 
@@ -99,7 +93,7 @@ fn derive_address(seed: &[u8]) -> Result<String> {
         .to_unified_full_viewing_key()
         .default_address(UnifiedAddressRequest::ORCHARD)
         .map_err(|e| anyhow!("address generation failed: {e:?}"))?;
-    Ok(ua.encode(&regtest::regtest_network()))
+    Ok(ua.encode(&network::params()))
 }
 
 /// Per-pool balance in zats. `pending` = total - spendable (unconfirmed, change, immature).
@@ -176,12 +170,12 @@ impl Wallet {
     /// the account on first use. Spends are built as PCZTs and authorized by an external
     /// [`Signer`] (the FROST guardians).
     pub async fn open_or_import_ufvk(ufvk: &str, db_path: &Path, lightwalletd: &str) -> Result<Self> {
-        let parsed = UnifiedFullViewingKey::decode(&regtest::regtest_network(), ufvk.trim())
-            .map_err(|e| anyhow!("not a regtest UFVK: {e}"))?;
+        let parsed = UnifiedFullViewingKey::decode(&network::params(), ufvk.trim())
+            .map_err(|e| anyhow!("not a {} UFVK: {e}", network::current().label()))?;
         let wallet = Self::open(db_path, lightwalletd, Key::Ufvk(Box::new(parsed))).await?;
         let stored = wallet.ufvk()?;
         anyhow::ensure!(
-            stored.encode(&regtest::regtest_network()) == ufvk.trim(),
+            stored.encode(&network::params()) == ufvk.trim(),
             "{} belongs to a different UFVK",
             db_path.display()
         );
@@ -189,7 +183,7 @@ impl Wallet {
     }
 
     async fn open(db_path: &Path, lightwalletd: &str, key: Key) -> Result<Self> {
-        let mut db = WalletDb::for_path(db_path, regtest::regtest_network(), SystemClock, OsRng)
+        let mut db = WalletDb::for_path(db_path, network::params(), SystemClock, OsRng)
             .with_context(|| format!("cannot open {}", db_path.display()))?;
         let seed = match &key {
             Key::Seed(seed) => Some(seed.clone()),
@@ -201,17 +195,19 @@ impl Wallet {
         let account_id = match db.get_account_ids()?.first() {
             Some(id) => *id,
             None => {
-                // Birthday at height 2 (prior chain state = block 1), not genesis: sync::run
-                // fetches the tree state at birthday - 1, and Zebra rejects `height: 0` in a
-                // BlockId as "unset". Cost: a wallet never sees block 1's coinbase.
-                let block1 = connect(lightwalletd)
+                let prior = birthday_prior_height(lightwalletd).await?;
+                let tree = connect(lightwalletd)
                     .await?
-                    .get_tree_state(BlockId { height: 1, hash: vec![] })
+                    .get_tree_state(BlockId { height: prior.into(), hash: vec![] })
                     .await
-                    .context("chain has no block 1 yet; run ./devnet/mine.sh 1")?
+                    .with_context(|| match network::current() {
+                        network::Network::Regtest => "chain has no block 1 yet; run ./devnet/mine.sh 1".to_owned(),
+                        network::Network::Mainnet => format!("cannot fetch the tree state at height {prior}"),
+                    })?
                     .into_inner();
-                let birthday = AccountBirthday::from_treestate(block1, None)
-                    .map_err(|e| anyhow!("bad tree state for block 1: {e:?}"))?;
+                // Stored in the wallet DB with the account (see `birthday`).
+                let birthday = AccountBirthday::from_treestate(tree, None)
+                    .map_err(|e| anyhow!("bad tree state for block {prior}: {e:?}"))?;
                 match &key {
                     Key::Seed(seed) => {
                         db.create_account("zec-wallet", &SecretVec::new(seed.clone()), &birthday, None)?
@@ -230,7 +226,8 @@ impl Wallet {
             seed,
             account_id,
             lightwalletd: lightwalletd.to_owned(),
-            confirmations: symmetric_policy(DEFAULT_MIN_CONFIRMATIONS)?,
+            // 1 on regtest, 10 on mainnet; change it with `set_min_confirmations`.
+            confirmations: symmetric_policy(network::current().default_min_confirmations())?,
         })
     }
 
@@ -245,13 +242,19 @@ impl Wallet {
         self.confirmations.untrusted().get()
     }
 
+    /// The account's birthday: the first height it scans (stored in the wallet DB).
+    pub fn birthday(&self) -> Result<u32> {
+        let birthday = self.db.get_account_birthday(self.account_id)?;
+        Ok(birthday.into())
+    }
+
     /// The account's unified full viewing key.
     pub fn ufvk(&self) -> Result<UnifiedFullViewingKey> {
         let account = self.db.get_account(self.account_id)?.context("wallet account missing")?;
         account.ufvk().cloned().context("account has no UFVK")
     }
 
-    /// The account's default address (uregtest1..., Orchard-format receiver).
+    /// The account's default address (uregtest1... or u1..., Orchard-format receiver).
     pub fn address(&self) -> Result<String> {
         let account = self.db.get_account(self.account_id)?.context("wallet account missing")?;
         let (ua, _) = account
@@ -259,7 +262,7 @@ impl Wallet {
             .context("account has no UFVK")?
             .default_address(UnifiedAddressRequest::ORCHARD)
             .map_err(|e| anyhow!("address generation failed: {e:?}"))?;
-        Ok(ua.encode(&regtest::regtest_network()))
+        Ok(ua.encode(&network::params()))
     }
 
     /// Derives the Orchard-format-receiver address at diversifier `index` and registers it with
@@ -269,7 +272,7 @@ impl Wallet {
             .db
             .get_address_for_index(self.account_id, index.into(), UnifiedAddressRequest::ORCHARD)?
             .with_context(|| format!("no Orchard-format address at diversifier index {index}"))?;
-        Ok(ua.encode(&regtest::regtest_network()))
+        Ok(ua.encode(&network::params()))
     }
 
     /// All non-change Ironwood notes received in mined transactions, oldest first.
@@ -336,7 +339,7 @@ impl Wallet {
         let cache = cache::MemBlockCache::default();
         zcash_client_backend::sync::run(
             &mut client,
-            &regtest::regtest_network(),
+            &network::params(),
             &cache,
             &mut self.db,
             SYNC_BATCH_SIZE,
@@ -451,8 +454,8 @@ impl Wallet {
     /// Builds, proves, signs and broadcasts a payment; change goes to Ironwood.
     /// Returns the txids (a proposal can need more than one transaction). Sync first.
     pub async fn send(&mut self, to: &str, zats: u64) -> Result<Vec<TxId>> {
-        let params = regtest::regtest_network();
-        let to = Address::decode(&params, to).with_context(|| format!("not a regtest address: {to}"))?;
+        let params = network::params();
+        let to = Address::decode(&params, to).with_context(|| format!("not a {} address: {to}", network::current().label()))?;
         let proposal = self.propose(&to, zats)?;
 
         // Sapling provers are required by the builder API even for Ironwood-only transactions.
@@ -484,7 +487,7 @@ impl Wallet {
         let amount = Zatoshis::from_u64(zats).map_err(|_| anyhow!("amount out of range: {zats}"))?;
         propose_standard_transfer_to_address::<_, _, Infallible>(
             &mut self.db,
-            &regtest::regtest_network(),
+            &network::params(),
             StandardFeeRule::Zip317,
             self.account_id,
             self.confirmations,
@@ -519,7 +522,7 @@ impl Wallet {
         let fee = proposal_fee(&proposal);
         let pczt = create_pczt_from_proposal::<_, _, Infallible, _, Infallible, _>(
             &mut self.db,
-            &regtest::regtest_network(),
+            &network::params(),
             self.account_id,
             OvkPolicy::Sender,
             &proposal,
@@ -579,12 +582,7 @@ impl Wallet {
     /// The node's current chain tip height (which drops after a reorg to a shorter chain, while
     /// the wallet's own scanned height does not).
     pub async fn node_tip(&mut self) -> Result<u32> {
-        let tip = connect(&self.lightwalletd)
-            .await?
-            .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
-            .await?
-            .into_inner();
-        u32::try_from(tip.height).context("tip height out of range")
+        chain_tip(&self.lightwalletd).await
     }
 
     /// Where the node has `txid` in its current main chain, asked now (not as of the last
@@ -608,7 +606,7 @@ impl Wallet {
             .await
             .with_context(|| format!("cannot fetch block {height}"))?
             .into_inner();
-        // Display order, as zebrad's getblockhash prints it.
+        // Display order (as block explorers print it).
         let block_hash = hex::encode(block.hash.iter().rev().copied().collect::<Vec<u8>>());
         Ok(Some(TxInclusion { height, block_hash }))
     }
@@ -653,6 +651,42 @@ fn symmetric_policy(n: u32) -> Result<ConfirmationsPolicy> {
     Ok(ConfirmationsPolicy::new_symmetrical(n, true))
 }
 
+/// The light-wallet server's chain tip height (GetLatestBlock).
+pub async fn chain_tip(lightwalletd: &str) -> Result<u32> {
+    let tip = connect(lightwalletd)
+        .await?
+        .get_latest_block(zcash_client_backend::proto::service::ChainSpec {})
+        .await?
+        .into_inner();
+    u32::try_from(tip.height).context("tip height out of range")
+}
+
+/// What a light-wallet server says about itself and its chain (GetLightdInfo).
+#[derive(Debug, Clone)]
+pub struct ServerInfo {
+    pub vendor: String,
+    pub version: String,
+    pub chain_name: String,
+    pub block_height: u32,
+    /// Hex, as the server reports it (e.g. "37a5165b" for Ironwood / NU6.3).
+    pub consensus_branch_id: String,
+}
+
+pub async fn server_info(lightwalletd: &str) -> Result<ServerInfo> {
+    let i = connect(lightwalletd)
+        .await?
+        .get_lightd_info(zcash_client_backend::proto::service::Empty {})
+        .await?
+        .into_inner();
+    Ok(ServerInfo {
+        vendor: i.vendor,
+        version: i.version,
+        chain_name: i.chain_name,
+        block_height: u32::try_from(i.block_height).context("tip height out of range")?,
+        consensus_branch_id: i.consensus_branch_id,
+    })
+}
+
 /// Parses a txid in its usual display form (byte-reversed hex).
 pub fn parse_txid(s: &str) -> Result<TxId> {
     let mut bytes: [u8; 32] = hex::decode(s.trim())
@@ -678,13 +712,13 @@ fn proposal_fee(proposal: &Proposal) -> u64 {
     proposal.steps().iter().map(|s| u64::from(s.balance().fee_required())).sum()
 }
 
-/// Accepts only regtest addresses with an Orchard-format receiver, which pay into Ironwood:
+/// Accepts only addresses of the current network with an Orchard-format receiver, which pay into Ironwood:
 /// a unified address with an Orchard receiver. Transparent, Sapling-only, TEX, other-network
 /// and malformed addresses are rejected.
 pub fn validate_withdrawal_address(s: &str) -> Result<Address> {
-    let params = regtest::regtest_network();
+    let params = network::params();
     let addr = Address::decode(&params, s.trim())
-        .with_context(|| format!("not a valid regtest Zcash address: {s}"))?;
+        .with_context(|| format!("not a valid {} Zcash address: {s}", network::current().label()))?;
     match &addr {
         Address::Unified(ua) if ua.orchard().is_some() => Ok(addr),
         Address::Unified(_) => bail!("unified address has no Orchard receiver (needed to pay into Ironwood)"),
@@ -702,11 +736,16 @@ fn orchard_circuit_version(branch: BranchId) -> Result<orchard::circuit::Orchard
     .circuit_version())
 }
 
-/// Builds the Orchard proving key for the current regtest consensus branch (a few seconds),
+/// Builds the Orchard proving key for the Ironwood (NU6.3) consensus branch (a few seconds),
 /// so the first withdrawal doesn't pay for it. Later calls hit the cache.
 pub fn warm_proving_key() -> Result<()> {
-    let params = regtest::regtest_network();
-    let branch = BranchId::for_height(&params, BlockHeight::from_u32(1));
+    let params = network::params();
+    let ironwood = zcash_protocol::consensus::Parameters::activation_height(
+        &params,
+        zcash_protocol::consensus::NetworkUpgrade::Nu6_3,
+    )
+    .context("Ironwood is not scheduled on this network")?;
+    let branch = BranchId::for_height(&params, ironwood);
     let version = orchard_circuit_version(branch)?;
     cached_orchard_proving_key(version);
     orchard_verifying_key(version);
@@ -742,10 +781,35 @@ fn recover_index(ivk: &orchard::keys::IncomingViewingKey, diversifier: &[u8]) ->
     u32::try_from(ivk.diversifier_index(&ivk.address(d))?).ok()
 }
 
+/// Blocks a new mainnet wallet starts before the chain tip, so its first sync is short.
+const MAINNET_BIRTHDAY_LOOKBACK: u32 = 100;
+
+/// The height whose tree state a new account starts from (its birthday is the next block).
+/// Regtest: block 1, so the wallet sees the whole devnet chain (Zebra rejects `height: 0` in a
+/// BlockId as "unset"; cost: block 1's coinbase is never seen). Mainnet: tip - 100.
+async fn birthday_prior_height(lightwalletd: &str) -> Result<u32> {
+    Ok(match network::current() {
+        network::Network::Regtest => 1,
+        network::Network::Mainnet => chain_tip(lightwalletd).await?.saturating_sub(MAINNET_BIRTHDAY_LOOKBACK + 1),
+    })
+}
+
+/// Connects to a light-wallet server: plaintext for `http://` (the devnet's Zebra), TLS with the
+/// webpki root store for `https://` (remote servers).
 async fn connect(url: &str) -> Result<CompactTxStreamerClient<tonic::transport::Channel>> {
-    CompactTxStreamerClient::connect(url.to_owned())
-        .await
-        .with_context(|| format!("cannot reach light-wallet gRPC at {url}; is zebrad running?"))
+    use tonic::transport::{ClientTlsConfig, Endpoint};
+    let hint = || match network::current() {
+        network::Network::Regtest => format!("cannot reach light-wallet gRPC at {url}; is zebrad running?"),
+        network::Network::Mainnet => format!("cannot reach the MAINNET light-wallet server {url} (ZEC_LWD_URL)"),
+    };
+    let mut endpoint = Endpoint::from_shared(url.to_owned()).with_context(|| format!("bad light-wallet URL {url}"))?;
+    if url.starts_with("https://") {
+        endpoint = endpoint
+            .tls_config(ClientTlsConfig::new().with_webpki_roots())
+            .with_context(|| format!("TLS setup for {url}"))?;
+    }
+    let channel = endpoint.connect().await.with_context(hint)?;
+    Ok(CompactTxStreamerClient::new(channel))
 }
 
 #[cfg(test)]

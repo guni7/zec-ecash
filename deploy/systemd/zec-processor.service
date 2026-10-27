@@ -1,0 +1,41 @@
+# MAINNET zec-processor on the main host (repo at /home/gunit/zec-ecash, state in its mainnet/).
+# Install: sudo cp deploy/systemd/*.service /etc/systemd/system/ && sudo systemctl daemon-reload
+#          sudo systemctl enable --now zec-processor
+# Logs: mainnet/logs/processor.log (+ .1..5), capped by the devlog crate; startup lines in journald.
+[Unit]
+Description=zec-ecash payment processor (MAINNET, real ZEC)
+After=network-online.target
+Wants=network-online.target
+# Not before the DKG and the transport setup (docs/deploy-mainnet.md): every key/config file.
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/.env
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/mint.ufvk
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/frost-pubkeys.json
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/guardian-ca.crt
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/guardian-1.auth
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/guardian-2.auth
+ConditionPathExists=/home/gunit/zec-ecash/mainnet/keys/guardian-3.auth
+ConditionPathExists=/home/gunit/zec-ecash/target/release/zec-processor
+# Keep retrying forever (a down light-wallet server must not leave it stopped).
+StartLimitIntervalSec=0
+
+[Service]
+Type=simple
+User=gunit
+Group=gunit
+WorkingDirectory=/home/gunit/zec-ecash
+# ZEC_NETWORK is never read from a file: the unit says it.
+Environment=ZEC_NETWORK=mainnet
+EnvironmentFile=/home/gunit/zec-ecash/mainnet/.env
+# The processor never needs the mint's ecash key.
+UnsetEnvironment=CDK_MINTD_MNEMONIC
+ExecStart=/home/gunit/zec-ecash/target/release/zec-processor
+Restart=always
+RestartSec=5
+# SIGTERM, then give the sync loop time to finish its pass.
+TimeoutStopSec=30
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=full
+
+[Install]
+WantedBy=multi-user.target

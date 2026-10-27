@@ -1,0 +1,41 @@
+// NUT-18 point of sale (crates/pos, proxied at /pos): is it up? Requests are in posreq.ts.
+// No DOM. Any answer that isn't the POS's own JSON (a proxy's 502/503/504, an HTML error page)
+// means the point of sale is offline.
+
+export type PosRequest = { id: string; request: string; amount: number };
+
+export const POS_OFFLINE = 'Point of sale is offline. Payment requests can’t be created right now; try again later.';
+
+export class PosOfflineError extends Error {
+  constructor() {
+    super(POS_OFFLINE);
+  }
+}
+
+const base = () => `${location.origin}/pos`;
+
+/** The POS's JSON body, or PosOfflineError for anything that didn't come from the POS itself. */
+async function posJson<T>(path: string, timeoutMs = 8000): Promise<{ res: Response; body: T }> {
+  let res: Response;
+  try {
+    res = await fetch(`${base()}${path}`, { cache: 'no-store', signal: AbortSignal.timeout(timeoutMs) });
+  } catch {
+    throw new PosOfflineError();
+  }
+  if (res.status >= 500) throw new PosOfflineError();
+  try {
+    return { res, body: (await res.json()) as T };
+  } catch {
+    throw new PosOfflineError();
+  }
+}
+
+/** true if the point of sale answers its health check. */
+export async function posOnline(): Promise<boolean> {
+  try {
+    const { res, body } = await posJson<{ ok?: boolean }>('/health', 4000);
+    return res.ok && body.ok === true;
+  } catch {
+    return false;
+  }
+}

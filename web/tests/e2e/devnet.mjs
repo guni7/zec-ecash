@@ -127,7 +127,7 @@ try {
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
   const token = await A.eval(`document.querySelector('.details textarea').value`);
   check(token.startsWith('cashuB') && /compact/.test(await A.eval(`document.querySelector('.details').textContent`)), `unlocked code is compact automatically (${token.length} chars)`);
-  check(/Anyone who scans this can take the money, like handing over cash\./.test(await text(A)) && /Waiting for them to scan/.test(await text(A)), 'shown code: the "like handing over cash" line, waiting for them to scan');
+  check(/Anyone who scans this can take the money, like handing over cash\./.test(await text(A)) && /Waiting for them…/.test(await text(A)), 'shown code: the "like handing over cash" line, Waiting for them…');
   await qrCheck(A, check, 'compact code', token);
   await shot(A, 'phone-send-code');
   const B = await b.open(`${URL_}#/`, await b.newContext(), 'B');
@@ -154,7 +154,7 @@ try {
   await type(A, null, '0.00003');
   await tap(A, { text: /^Show code$/ });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
-  await tap(A, { text: /^Cancel and take it back$/ });
+  await tap(A, { text: /^Take it back$/ });
   await shot(A, 'phone-send-take-back-confirm');
   await tap(A, { text: /^Yes, take it back$/ });
   await waitResult(A, /Taken back/, 15000);
@@ -165,9 +165,9 @@ try {
   await B.waitFor(`!document.querySelector('.offline').hidden && /Offline/.test(document.querySelector('.offline').textContent)`, 5000);
   await nav(B, '/receive');
   await shot(B, 'phone-receive');
-  await tap(B, { text: /^Show my code$/ });
+  await tap(B, { text: /^Receive without internet$/ });
   const bPub = await B.eval(`document.querySelector('.details .chip').title`);
-  check(/You’re offline\. They scan this, then show you a code back/.test(await text(B)), 'offline "Show my code": the receive-key QR and one line on what happens next');
+  check(/You’re offline/.test(await text(B)) && /They’ll scan this, then show you a code back to scan/.test(await text(B)), 'offline "Receive without internet": the receive-key QR and one line on what happens next');
   await qrCheck(B, check, 'receive key', bPub);
   await shot(B, 'phone-receive-offline-code');
   // an unlocked code can't be checked offline: refused, in plain words
@@ -181,12 +181,12 @@ try {
   await waitResult(B, /Couldn’t receive/, 15000);
   check(/You’re offline.*show them your code first/.test(await text(B)), 'offline: an unlocked code is refused, saying what to do instead');
   await shot(B, 'phone-receive-refused-offline');
-  await tap(A, { text: /^Cancel and take it back$/ });
+  await tap(A, { text: /^Take it back$/ });
   await tap(A, { text: /^Yes, take it back$/ });
   await waitResult(A, /Taken back/, 15000);
   // A scans B's code and sends 0.00005 ZEC locked to it
   await tap(B, '.tabbar a[data-path="/receive"]');
-  await tap(B, { text: /^Show my code$/ });
+  await tap(B, { text: /^Receive without internet$/ });
   await pointCamera(A, { from: B });
   await nav(A, '/send');
   await tap(A, { text: /^Scan their code$/ });
@@ -197,7 +197,7 @@ try {
   await tap(A, { text: /^Send$/, sel: '.confirm button' });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
   const locked = await A.eval(`document.querySelector('.details textarea').value`);
-  check(/locked/.test(await A.eval(`document.querySelector('.details').textContent`)) && !/Cancel and take it back/.test(await text(A)), 'locked code: with DLEQ proofs, no take-back');
+  check(/locked/.test(await A.eval(`document.querySelector('.details').textContent`)) && !/Take it back/.test(await text(A)), 'locked code: with DLEQ proofs, no take-back');
   await qrCheck(A, check, 'locked code (with DLEQ)', locked);
   await shot(A, 'phone-send-locked');
   await tap(A, '.qr-tap');
@@ -220,7 +220,7 @@ try {
 
   // ---------- A asks for 0.000015 ZEC; B pays it from the universal Scan ----------
   await nav(A, '/receive');
-  await tap(A, { text: /^Show my code$/ });
+  await tap(A, { text: /^Request an amount$/ });
   await shot(A, 'phone-receive-amount');
   await type(A, null, '0.000015');
   await tap(A, { text: /^Show code$/ });

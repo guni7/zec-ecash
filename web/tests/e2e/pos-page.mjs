@@ -1,5 +1,5 @@
 // Devnet browser test of the locked point of sale on the page (360 px phone, headless Chrome):
-//   1. the page creates a request (Receive › Show my code, with an amount); `zec-ecash-cli pay` pays it (locked, DLEQ, no refund); the
+//   1. the page creates a request (Receive › Request an amount); `zec-ecash-cli pay` pays it (locked, DLEQ, no refund); the
 //      page collects it automatically, even though the mint's answer to the first swap is lost
 //      (NUT-09 restore); balance up; the server's copy deleted;
 //   2. the phone is offline (and reloaded) when another phone pays it (Send › Paste instead); it
@@ -49,11 +49,11 @@ const zec = (n) => (n / 1e8).toFixed(8).replace(/0+$/, '');
 const btn = (re, scope = 'main') => `[...document.querySelector(${J(scope)}).querySelectorAll('button')].find((b) => ${re}.test(b.textContent.trim()))`;
 const result = `(document.querySelector('.result-title')?.textContent ?? '')`;
 const main = `document.querySelector('main').textContent`;
-/** Asks for an amount (Receive › Show my code); returns {id, creq}. */
+/** Asks for an amount (Receive › Request an amount); returns {id, creq}. */
 async function createRequest(p, amount) {
   await nav(p, '/');
   await nav(p, '/receive');
-  await p.eval(`${btn('/^Show my code$/')}.click()`);
+  await p.eval(`${btn('/^Request an amount$/')}.click()`);
   await p.waitFor(`!!document.querySelector('.confirm .amount-input')`, 5000);
   await p.eval(fill('.confirm .amount-input', zec(amount)));
   await p.eval(`${btn('/^Show code$/')}.click()`);

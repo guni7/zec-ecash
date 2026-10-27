@@ -6,11 +6,18 @@
 
 export type Route = { path: string; params: URLSearchParams };
 
-export const PATHS = ['/', '/send', '/scan', '/receive', '/activity', '/deposit', '/withdraw', '/status', '/settings', '/welcome'] as const;
+export const PATHS = [
+  '/', '/send', '/scan', '/receive', '/activity', '/deposit', '/withdraw', '/status', '/settings', '/welcome',
+  // shop mode, and what customers open from a shop's link
+  '/charge', '/invoices', '/dashboard', '/shop', '/invoice', '/receipt',
+] as const;
 export type Path = (typeof PATHS)[number];
 
 /** Pages that moved: the old path still works, with its parameters. */
 export const REDIRECTS: Record<string, Path> = { '/request': '/receive' };
+
+/** Pages whose data is in the path: #/invoice/<data> -> /invoice with d=<data>. */
+const DATA_PATHS = ['/invoice', '/receipt'];
 
 /** '#/send?t=1' -> { path: '/send', params: t=1 }. Unknown paths go home. */
 export function parse(hash: string): Route & { path: Path; moved?: boolean } {
@@ -20,6 +27,11 @@ export function parse(hash: string): Route & { path: Path; moved?: boolean } {
   if (!path.startsWith('/')) path = `/${path}`;
   const params = new URLSearchParams(q < 0 ? '' : raw.slice(q + 1));
   if (REDIRECTS[path]) return { path: REDIRECTS[path], params, moved: true };
+  const data = DATA_PATHS.find((p) => path.startsWith(`${p}/`));
+  if (data) {
+    params.set('d', path.slice(data.length + 1));
+    return { path: data as Path, params };
+  }
   return { path: (PATHS as readonly string[]).includes(path) ? (path as Path) : '/', params };
 }
 

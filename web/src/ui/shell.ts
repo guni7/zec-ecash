@@ -1,6 +1,7 @@
 // The frame around every page: network strip (MAINNET is permanent) with the connection dot,
 // offline indicator, desktop sidebar (>= 900 px), phone tab bar with Scan in the middle, and
-// toasts. Each page draws its own one-line title.
+// toasts. Each page draws its own one-line title. In shop mode the navigation is the shop's
+// (Charge · Invoices · Dashboard · Wallet · Settings), under a strip with the way back.
 import { h, svg, ICON, setToast } from './dom';
 import type { Path } from './router';
 
@@ -14,7 +15,15 @@ export const NAV: NavItem[] = [
   { path: '/activity', label: 'Activity', icon: ICON.activity },
 ];
 
-export function createShell(opts: { mainnet: boolean; mintHost: string }) {
+export const SHOP_NAV: NavItem[] = [
+  { path: '/charge', label: 'Charge', icon: ICON.charge },
+  { path: '/invoices', label: 'Invoices', icon: ICON.invoice },
+  { path: '/dashboard', label: 'Dashboard', icon: ICON.chart },
+  { path: '/', label: 'Wallet', icon: ICON.wallet },
+  { path: '/settings', label: 'Settings', icon: ICON.settings },
+];
+
+export function createShell(opts: { mainnet: boolean; mintHost: string; onPersonal: () => void }) {
   const view = h('main', { id: 'view', class: 'view', tabindex: '-1' });
   const mintDot = h('span', { class: 'dot', 'aria-hidden': 'true' });
   const mintDot2 = h('span', { class: 'dot', 'aria-hidden': 'true' });
@@ -38,8 +47,12 @@ export function createShell(opts: { mainnet: boolean; mintHost: string }) {
 
   const tabbar = h('nav', { class: 'tabbar', 'aria-label': 'Main' }, NAV.map((n) => navLink(n, 'tab')));
 
+  // Shop mode: whose shop this is, and the way back to the personal wallet.
+  const shopName = h('span', { class: 'modebar-name' });
+  const modebar = h('div', { class: 'modebar', hidden: true }, h('span', { class: 'modebar-tag' }, svg(ICON.shop), 'Shop mode'), shopName, h('button', { type: 'button', class: 'link-btn', onclick: () => opts.onPersonal() }, 'Personal mode'));
+
   const inlineToasts = h('div', { class: 'toasts-inline', role: 'status', 'aria-live': 'polite' });
-  const root = h('div', { class: 'app' }, sidebar, h('div', { class: 'main' }, netbar, offline, inlineToasts, view), tabbar, toasts);
+  const root = h('div', { class: 'app' }, sidebar, h('div', { class: 'main' }, netbar, modebar, offline, inlineToasts, view), tabbar, toasts);
 
   /** Toasts never cover a QR code: bottom if that is clear, else top, else in the page flow. */
   function placeToasts() {
@@ -99,10 +112,24 @@ export function createShell(opts: { mainnet: boolean; mintHost: string }) {
       for (const t of [...toasts.children, ...inlineToasts.children]) if (sink || (quiet && !t.classList.contains('bad'))) t.remove();
       placeToasts();
     },
-    /** Highlights the current page in both navs (Add money, Cash out, Status and Settings sit under Home). */
+    /** The personal navigation, or the shop's (with the strip naming the shop). */
+    setMode(shop: boolean, name = '') {
+      const items = shop ? SHOP_NAV : NAV;
+      sidebar.querySelector('.side-nav')!.replaceChildren(...items.map((n) => navLink(n, 'side-link')));
+      tabbar.replaceChildren(...items.map((n) => navLink(n, 'tab')));
+      tabbar.classList.toggle('shop', shop);
+      modebar.hidden = !shop;
+      shopName.textContent = name;
+      root.classList.toggle('shop-mode', shop);
+    },
+    /** Highlights the current page in both navs (Add money, Cash out, Status and Settings sit under Home;
+     * in shop mode the wallet's pages sit under Wallet, and the shop profile under Settings). */
     setRoute(path: Path) {
       root.dataset.page = path.slice(1) || 'home';
-      const under: Partial<Record<Path, Path>> = { '/deposit': '/', '/withdraw': '/', '/status': '/', '/settings': '/', '/welcome': '/' };
+      const shop = root.classList.contains('shop-mode');
+      const under: Partial<Record<Path, Path>> = shop
+        ? { '/send': '/', '/scan': '/', '/receive': '/', '/activity': '/', '/deposit': '/', '/withdraw': '/', '/status': '/', '/welcome': '/', '/shop': '/settings' }
+        : { '/deposit': '/', '/withdraw': '/', '/status': '/', '/settings': '/', '/welcome': '/' };
       const current = under[path] ?? path;
       for (const a of root.querySelectorAll<HTMLAnchorElement>('[data-path]')) {
         if (a.dataset.path === path) a.setAttribute('aria-current', 'page');

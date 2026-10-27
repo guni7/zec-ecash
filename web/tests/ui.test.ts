@@ -62,3 +62,27 @@ test('plain words: wallet errors say what happened and what to do, without jargo
   }
   assert.equal(plainOrNull('Deposit quote created: pay exactly 0.0006 ZEC to the address shown.'), null);
 });
+
+test('Zcash addresses in QR codes: uppercase (ZIP-316 alphanumeric mode) reads as the address', async () => {
+  const { normalizePaymentText, parsePaymentUri } = await import('../src/wallet/onchain');
+  const ua = 'u1qf5vq2p7chw0x8mz3ldfz4x4rtnvqx9c3hzgk0q5kvn6xw8k8a5d4wq0yq4ycz3l7e3d0y6cn3e8f6v4mqcs9zt';
+  assert.deepEqual(classify(ua.toUpperCase()), { kind: 'address', text: ua }, 'the centre Scan button takes it');
+  assert.deepEqual(classify(ua), { kind: 'address', text: ua });
+  assert.equal(parsePaymentUri(ua.toUpperCase()).address, ua, 'Cash out sends the lowercase address');
+  const link = parsePaymentUri(`ZCASH:${ua.toUpperCase()}?AMOUNT=0.0012`);
+  assert.equal(link.address, ua);
+  assert.equal(link.amount, 120_000, 'parameter names in uppercase too');
+  assert.equal(classify(`ZCASH:${ua.toUpperCase()}?AMOUNT=0.0012`).kind, 'address');
+  assert.equal(parsePaymentUri(`zcash:?address=${ua.toUpperCase()}`).address, ua);
+  // what Cash out shows after a scan
+  assert.equal(normalizePaymentText(`ZCASH:${ua.toUpperCase()}?AMOUNT=0.0012&MEMO=SGVsbG8`), `zcash:${ua}?amount=0.0012&memo=SGVsbG8`, 'memo value kept as is');
+  assert.equal(normalizePaymentText(` ${ua.toUpperCase()} `), ua);
+  // mixed case is not a valid address: left alone (the service refuses it)
+  const mixed = `U1${ua.slice(2)}`;
+  assert.equal(parsePaymentUri(mixed).address, mixed);
+  assert.equal(classify(mixed).kind, 'unknown');
+  // transparent addresses are case-sensitive base58: never changed
+  const t = 't1Rv4exT7bqhZqi2j7xz8bUHDMxwosrjADU';
+  assert.equal(parsePaymentUri(t).address, t);
+  assert.deepEqual(classify(t), { kind: 'address', text: t });
+});

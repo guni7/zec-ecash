@@ -92,7 +92,8 @@ export async function busy<T>(button: HTMLButtonElement, work: () => Promise<T>,
   try {
     return await work();
   } catch (e) {
-    toast(explain(e), 'bad');
+    const text = explain(e); // '' when the caller showed the failure itself
+    if (text) toast(text, 'bad');
     return undefined;
   } finally {
     button.disabled = false;
@@ -118,6 +119,12 @@ export const ICON = {
   share: I('<path d="M12 3v12"/><path d="m7 8 5-5 5 5"/><path d="M5 12v8h14v-8"/>'),
   scan: I('<path d="M4 8V4h4M16 4h4v4M20 16v4h-4M8 20H4v-4"/><path d="M4 12h16"/>'),
   close: I('<path d="m6 6 12 12M18 6 6 18"/>'),
+  plus: I('<path d="M12 5v14M5 12h14"/>'),
+  charge: I('<path d="M4 4h16v16H4z"/><path d="M8 9h8M8 13h5"/><path d="M15 15l2 2 3-4"/>'),
+  invoice: I('<path d="M6 3h9l4 4v14H6z"/><path d="M15 3v4h4"/><path d="M9 12h7M9 16h7"/>'),
+  chart: I('<path d="M4 20h16"/><path d="M7 16v-5M12 16V7M17 16v-8"/>'),
+  wallet: I('<path d="M3 7h16v12H3z"/><path d="M3 7l12-3v3"/><path d="M15 12h4v3h-4z"/>'),
+  shop: I('<path d="M4 9 6 4h12l2 5"/><path d="M4 9h16v2a3 3 0 0 1-5.3 1.9A3 3 0 0 1 12 14a3 3 0 0 1-2.7-1.1A3 3 0 0 1 4 11z"/><path d="M5 14v6h14v-6"/>'),
   check: '<svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="m14 25 7 7 13-15"/></svg>',
   alert: '<svg viewBox="0 0 48 48" width="56" height="56" fill="none" stroke="currentColor" stroke-width="3.2" stroke-linecap="square" aria-hidden="true"><circle cx="24" cy="24" r="21"/><path d="M24 13v14M24 33v3"/></svg>',
   shield: I('<path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6z"/><path d="m8.5 12 2.5 2.5 4.5-5"/>'),

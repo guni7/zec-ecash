@@ -1,6 +1,28 @@
 import type { FeedItem } from '../../wallet/activity';
 import { busy, h, svg, ICON } from '../dom';
 import { emptyState, feedRow, pageHead, type App, type Page } from '../widgets';
+import { moneyText } from '../words';
+
+/** Shop invoices this wallet paid and receipts it saved (shop/store.ts savePurchase), newest first. */
+function receipts(app: App) {
+  let list: Array<{ id: string; at: number; kind: 'invoice' | 'receipt'; number: string; shop: string; total: number; data: string }> = [];
+  try {
+    list = JSON.parse(localStorage.getItem(app.core.key('purchases')) ?? '[]');
+  } catch {
+    /* none */
+  }
+  if (!list.length) return '';
+  return h(
+    'section',
+    { class: 'section' },
+    h('h2', { class: 'section-title' }, 'Receipts and invoices'),
+    h(
+      'div',
+      { class: 'list' },
+      list.map((p) => h('a', { href: `#/${p.kind}/${p.data}`, class: 'list-row' }, h('span', null, h('strong', null, `${p.kind === 'receipt' ? 'Receipt' : 'Invoice'} ${p.number}`), h('span', { class: 'hint' }, ` · ${p.shop}`)), h('span', { class: 'mono' }, moneyText(p.total)))),
+    ),
+  );
+}
 
 /** A sent code nobody has taken yet carries "Take it back" (asks first), as on its own page. */
 function row(app: App, item: FeedItem) {
@@ -35,6 +57,7 @@ export const activity: Page = {
           : moving.length
             ? ''
             : emptyState('Nothing here yet.', h('a', { href: '#/deposit', class: 'btn primary' }, svg(ICON.deposit), 'Add money')),
+        receipts(app),
       );
     };
     update();

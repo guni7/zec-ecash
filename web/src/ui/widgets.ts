@@ -20,6 +20,8 @@ export type App = {
   feed(): FeedItem[];
   /** Any failure as a plain sentence that says what to do next. */
   explain(e: unknown): string;
+  /** Shop mode on (the shop's navigation, opening at Charge) or off (the personal wallet). */
+  setShopMode(on: boolean): void;
   /** Calls `fn` on any wallet change (balance, deposits, withdrawals, sends); returns unsubscribe. */
   onChange(fn: () => void): () => void;
 };

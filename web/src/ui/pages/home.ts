@@ -86,6 +86,10 @@ export const home: Page = {
       card,
       chip,
       actions,
+      // Shop mode keeps the shop in the tab bar; the wallet's own pages are one tap away here.
+      app.prefs.get().shopMode
+        ? h('nav', { class: 'wallet-links', 'aria-label': 'Wallet' }, ([['#/send', 'Send', ICON.send], ['#/scan', 'Scan', ICON.scan], ['#/receive', 'Receive', ICON.receive], ['#/activity', 'Activity', ICON.activity]] as const).map(([href, label, icon]) => h('a', { href, class: 'btn' }, svg(icon), label)))
+        : '',
       nudge,
       recent,
     );

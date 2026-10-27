@@ -46,7 +46,12 @@ export type PosRecord = {
   /** Amount redeemed into this wallet. */
   collected?: number;
   preview?: SerializedSwapPreview;
+  /** When the server received the payment (its clock; ms), not when this phone saw it. */
   paidAt?: number;
+  /** After this (ms) the server refuses payments; none: never. */
+  expiresAt?: number;
+  /** Cancelled on the server: payments from then on are refused. */
+  cancelledAt?: number;
   error?: string;
   /** Payments that lost the race or came after PAID, kept by the server for this phone. */
   extras?: ExtraPayment[];
@@ -58,8 +63,10 @@ export type PosRecord = {
  * collected like the main one; the payee may refund it by hand. */
 export type ExtraPayment = {
   n: number;
-  kind?: 'extra' | 'partial';
+  /** late: arrived after the request expired or was cancelled; the server refused it (it pays nothing) and kept it. */
+  kind?: 'extra' | 'partial' | 'late';
   received: number;
+  /** When the server received it (its clock; ms). */
   at: number;
   state: 'paid' | 'collecting' | 'collected' | 'done';
   preview?: SerializedSwapPreview;
@@ -137,15 +144,18 @@ export function createPosRequests(core: Core) {
     return i;
   }
 
-  /** Creates a request locked to a fresh key. */
-  async function create(amount: number): Promise<PosRecord> {
+  /** Creates a request locked to a fresh key; optionally expiring (ms) and with a description in the request. */
+  async function create(amount: number, opts: { expiresAt?: number; description?: string } = {}): Promise<PosRecord> {
     if (!Number.isInteger(amount) || amount <= 0) throw new Error('Enter a whole number of zat.');
     for (let tries = 0; tries < 20; tries++) {
       const index = takeIndex();
       const { pub } = deriveKey(SEEDHEX, index);
       let res: Response;
       try {
-        res = await fetch(`${POS()}/create?amount=${amount}&unit=${core.unit}&pubkey=${pub}`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
+        const q = new URLSearchParams({ amount: String(amount), unit: core.unit, pubkey: pub });
+        if (opts.expiresAt) q.set('expires_at', String(Math.floor(opts.expiresAt / 1000)));
+        if (opts.description) q.set('description', opts.description);
+        res = await fetch(`${POS()}/create?${q}`, { cache: 'no-store', signal: AbortSignal.timeout(8000) });
       } catch {
         throw new PosOffline();
       }
@@ -153,7 +163,7 @@ export function createPosRequests(core: Core) {
       const body = (await res.json().catch(() => ({}))) as { id?: string; request?: string; error?: string };
       if (res.status === 409) continue; // key already used (a restored wallet): the next one
       if (!res.ok || !body.id || !body.request) throw new Error(`Point of sale: ${body.error ?? `HTTP ${res.status}`}`);
-      const rec: PosRecord = { id: body.id, index, pubkey: pub, amount, created: Date.now(), request: body.request, state: 'open' };
+      const rec: PosRecord = { id: body.id, index, pubkey: pub, amount, created: Date.now(), request: body.request, state: 'open', expiresAt: opts.expiresAt };
       records = [rec, ...records];
       save();
       return rec;
@@ -223,13 +233,37 @@ export function createPosRequests(core: Core) {
     return res.ok;
   }
 
+  /** Closes a request on the server: payments from now on are refused. */
+  async function cancel(id: string): Promise<void> {
+    const rec = records.find((r) => r.id === id);
+    if (!rec) throw new Error('No such payment request.');
+    if (rec.cancelledAt) return;
+    let res: Response;
+    try {
+      res = await signedFetch(`/requests/${encodeURIComponent(id)}/cancel`, keyOf(rec).priv, 'cancel', id, { method: 'POST' });
+    } catch {
+      throw new PosOffline();
+    }
+    if (res.status >= 500) throw new PosOffline();
+    const body = (await res.json().catch(() => ({}))) as { cancelled_at?: number; error?: string };
+    if (!res.ok) throw new Error(`Point of sale: ${body.error ?? `HTTP ${res.status}`}`);
+    rec.cancelledAt = (body.cancelled_at ?? Math.floor(Date.now() / 1000)) * 1000;
+    save();
+  }
+
+  /** Server times (unix s) to ours (ms); missing: now. */
+  const ms = (t?: number | null) => (typeof t === 'number' ? t * 1000 : Date.now());
+
   type Served = {
     state?: string;
     token?: string | null;
     collected?: boolean;
     received?: number;
+    paid_at?: number | null;
+    expires_at?: number | null;
+    cancelled_at?: number | null;
     error?: string;
-    extras?: Array<{ n: number; kind?: 'extra' | 'partial'; received: number; token?: string | null; collected: boolean }>;
+    extras?: Array<{ n: number; kind?: 'extra' | 'partial' | 'late'; received: number; token?: string | null; collected: boolean; paid_at?: number | null }>;
   };
 
   async function step(w: Wallet, rec: PosRecord, gapMs?: number) {
@@ -242,14 +276,24 @@ export function createPosRequests(core: Core) {
       body = (await res.json().catch(() => ({}))) as Served;
       if (!res.ok) throw new Error(`Point of sale: ${body.error ?? `HTTP ${res.status}`}`);
       rec.extrasCheckedAt = Date.now();
+      // The server's times: when it received each payment (this phone may have been offline).
+      if (typeof body.paid_at === 'number') rec.paidAt = ms(body.paid_at);
+      if (typeof body.expires_at === 'number') rec.expiresAt = ms(body.expires_at);
+      if (typeof body.cancelled_at === 'number') rec.cancelledAt = ms(body.cancelled_at);
       for (const e of body.extras ?? []) {
-        if (exs.some((x) => x.n === e.n)) continue;
-        exs.push({ n: e.n, kind: e.kind ?? 'extra', received: e.received, at: Date.now(), state: e.collected ? 'done' : 'paid' });
+        const known = exs.find((x) => x.n === e.n);
+        if (known) {
+          if (typeof e.paid_at === 'number') known.at = ms(e.paid_at);
+          continue;
+        }
+        exs.push({ n: e.n, kind: e.kind ?? 'extra', received: e.received, at: ms(e.paid_at), state: e.collected ? 'done' : 'paid' });
         if (!e.collected)
           core.say(
             e.kind === 'partial'
               ? `Partial payment received: ${e.received.toLocaleString('en-US')} of ${rec.amount.toLocaleString('en-US')} ${core.unit}. The request is still unpaid; you can refund it.`
-              : `Extra payment received: ${e.received.toLocaleString('en-US')} ${core.unit} (the request was already paid). You can refund it.`,
+              : e.kind === 'late'
+                ? `Late payment received: ${e.received.toLocaleString('en-US')} ${core.unit} came after the request closed, so it doesn't pay it. You can refund it.`
+                : `Extra payment received: ${e.received.toLocaleString('en-US')} ${core.unit} (the request was already paid). You can refund it.`,
             'ok',
           );
       }
@@ -265,7 +309,7 @@ export function createPosRequests(core: Core) {
         if (rec.state === 'open') {
           rec.state = 'paid';
           rec.received = body.received;
-          rec.paidAt = Date.now();
+          rec.paidAt = ms(body.paid_at);
           save();
         }
         await prepare(w, rec, body.token); // saved before the swap is sent
@@ -286,7 +330,7 @@ export function createPosRequests(core: Core) {
           save();
         } else if (served?.token) await prepare(w, ex, served.token);
       }
-      if (ex.state === 'collecting') await redeem(w, priv, ex, ex.kind === 'partial' ? 'from a partial payment' : 'from an extra payment');
+      if (ex.state === 'collecting') await redeem(w, priv, ex, ex.kind === 'partial' ? 'from a partial payment' : ex.kind === 'late' ? 'from a late payment' : 'from an extra payment');
       if (ex.state === 'collected' && (await acknowledge(priv, rec.id, ex.n))) {
         ex.state = 'done';
         save();
@@ -356,6 +400,7 @@ export function createPosRequests(core: Core) {
 
   return {
     create,
+    cancel,
     collectAll,
     scan,
     records: (): readonly PosRecord[] => records,
@@ -413,6 +458,29 @@ export function payloadProofs(proofs: Proof[]) {
   return proofs.map((p) => ({ id: p.id, amount: Number(String(p.amount)), secret: p.secret, C: p.C, ...(p.dleq ? { dleq: p.dleq } : {}), ...(p.witness ? { witness: p.witness } : {}) }));
 }
 
+export const EXPIRED = 'This payment request has expired. Nothing was paid; ask the shop for a new one.';
+export const CANCELLED = 'The shop cancelled this payment request. Nothing was paid; ask for a new one.';
+
+/**
+ * Before paying (the payment is locked to the shop's key, so it can't be taken back): asks the
+ * request's server whether it still takes payments. Throws "expired" / "cancelled" if not, or if
+ * it closes within `marginS` (server clock). Other servers, or none reachable: no answer, go on.
+ */
+export async function checkOpen(info: RequestInfo, marginS = 20): Promise<void> {
+  if (!info.id || !/\/payment$/.test(info.target)) return;
+  let body: { expired?: boolean; cancelled?: boolean; expires_at?: number | null; now?: number };
+  try {
+    const res = await fetch(info.target.replace(/\/payment$/, `/check/${encodeURIComponent(info.id)}`), { cache: 'no-store', signal: AbortSignal.timeout(6000) });
+    if (!res.ok) return;
+    body = await res.json();
+  } catch {
+    return;
+  }
+  if (body.cancelled) throw new Error(CANCELLED);
+  if (body.expired || (typeof body.expires_at === 'number' && typeof body.now === 'number' && body.expires_at - body.now < marginS))
+    throw new Error(EXPIRED);
+}
+
 /** POSTs a payment to a request's transport. Returns [ok, message]. */
 export async function deliver(info: RequestInfo, mintUrl: string, unit: string, proofs: Proof[]): Promise<[boolean, string]> {
   let res: Response;
@@ -425,8 +493,12 @@ export async function deliver(info: RequestInfo, mintUrl: string, unit: string, 
   } catch {
     return [false, 'The shop’s point of sale is unreachable.'];
   }
-  const body = (await res.json().catch(() => ({}))) as { error?: string; state?: string; extra?: boolean; partial?: boolean };
-  return res.ok ? [true, body.partial ? 'PARTIAL' : body.extra ? 'EXTRA' : (body.state ?? 'PAID')] : [false, body.error ?? `HTTP ${res.status}`];
+  const body = (await res.json().catch(() => ({}))) as { error?: string; state?: string; extra?: boolean; partial?: boolean; kept?: boolean };
+  if (res.ok) return [true, body.partial ? 'PARTIAL' : body.extra ? 'EXTRA' : (body.state ?? 'PAID')];
+  // Refused because the request closed while paying: the shop keeps it to refund.
+  const closed = /^(expired|cancelled):/.exec(body.error ?? '')?.[1];
+  if (closed) return [false, `${closed === 'expired' ? 'This payment request expired' : 'The shop cancelled this payment request'} as you paid, so it doesn’t pay it. ${body.kept ? 'The shop has your payment and can refund it; ask them.' : ''}`.trim()];
+  return [false, body.error ?? `HTTP ${res.status}`];
 }
 
 export { getEncodedToken };

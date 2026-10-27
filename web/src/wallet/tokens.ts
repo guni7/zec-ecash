@@ -3,7 +3,7 @@
 import { CheckStateEnum, getEncodedToken, getTokenMetadata, type Proof } from '@cashu/cashu-ts';
 import { loadJson, reviveProofs, saveJson, sumAmounts, type Core } from './core';
 import { loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
-import { deliver, readRequest, type RequestInfo } from './posreq';
+import { checkOpen, deliver, readRequest, type RequestInfo } from './posreq';
 
 export type SentToken = {
   id: string;
@@ -165,6 +165,7 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     const info = readRequest(creq, core.mintUrl, core.unit);
     const balance = core.balance();
     if (balance < info.amount) throw new Error(`Not enough ecash: the request is for ${info.amount} ${core.unit}, balance is ${balance}.`);
+    await checkOpen(info); // expired or cancelled: nothing leaves the wallet
     const w = await core.connect();
     const { keep, send: out } = info.lockTo
       ? await w.send(info.amount, core.proofs(), undefined, { send: { type: 'p2pk', options: { pubkey: info.lockTo } } })

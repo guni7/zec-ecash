@@ -134,7 +134,7 @@ export function buildFeed(src: {
       tone: s.state === 'pending' ? 'live' : s.state === 'reclaimed' ? 'muted' : 'ok',
       pending: s.state === 'pending',
       href: `/send?t=${encodeURIComponent(s.id)}`,
-      title: s.request ? 'Paid a code' : 'Sent',
+      title: s.request ? (s.request.description ? `Paid ${s.request.description}` : 'Paid a code') : 'Sent',
     });
   }
   for (const r of src.received) {

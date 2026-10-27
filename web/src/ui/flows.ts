@@ -4,7 +4,7 @@
 // live here, plus the backup download that the first-run screen, Home and Settings offer.
 import { getTokenMetadata } from '@cashu/cashu-ts';
 import { makeBackup } from '../wallet/backup';
-import { readRequest } from '../wallet/posreq';
+import { CANCELLED, EXPIRED, readRequest } from '../wallet/posreq';
 import { classify, UNKNOWN_CODE } from './classify';
 import { busy, copyChip, h, svg, toast, ICON } from './dom';
 import { handOff } from './handoff';
@@ -88,6 +88,8 @@ export function handleCode(ctx: Ctx, text: string, where: 'scan' | 'send' | 'rec
     case 'address':
       handOff('/withdraw', code.text);
       return go('/withdraw');
+    case 'link':
+      return go(code.text);
     default:
       say(UNKNOWN_CODE);
   }
@@ -114,9 +116,15 @@ export function payConfirm(ctx: Ctx, creq: string): Node {
         const { item, ok, message } = await app.tokens.payRequest(creq);
         go(`/send?t=${encodeURIComponent(item.id)}&r=${encodeURIComponent(ok ? message : 'FAILED')}`, true);
       },
-      app.explain,
+      (e) => {
+        // expired or cancelled: nothing was paid; say so in place of the confirm screen
+        const m = e instanceof Error ? e.message : '';
+        if (m !== EXPIRED && m !== CANCELLED) return app.explain(e);
+        screen.replaceWith(resultView({ ok: false, title: m === EXPIRED ? 'This request has expired' : 'This request was cancelled', text: m, actions: [h('button', { type: 'button', class: 'btn primary block', onclick: () => ctx.restart() }, 'Scan another code')] }));
+        return '';
+      },
     );
-  return h(
+  const screen = h(
     'section',
     { class: 'confirm' },
     h('p', { class: 'confirm-label' }, 'Pay this code'),
@@ -131,6 +139,7 @@ export function payConfirm(ctx: Ctx, creq: string): Node {
       h('p', { class: 'hint' }, 'A NUT-18 payment request. The ecash is locked to the payee’s key (P2PK) with DLEQ proofs, no refund or locktime, and delivered to their payment service.'),
     ),
   );
+  return screen;
 }
 
 /** Someone's receive code (a public key): an amount, a warning, and Send. */
@@ -216,11 +225,13 @@ export async function receiveNow(ctx: Ctx, token: string) {
   }
 }
 
-/** Saves the backup file (everything this browser holds for the mint) and remembers when. */
-export function downloadBackup(app: App) {
+/** Saves the backup file (everything this browser holds for the mint, the shop's data too) and remembers when. */
+export async function downloadBackup(app: App) {
   const network = app.core.mainnet ? 'mainnet' : 'regtest';
   app.prefs.set({ backupAt: Date.now() }); // first, so the file says it is backed up
-  const b = makeBackup(app.core.mintUrl, network);
+  const b: ReturnType<typeof makeBackup> & { shop?: unknown } = makeBackup(app.core.mintUrl, network);
+  const shop = await import('../shop/open');
+  if (await shop.hasShopData(app.core.mintUrl)) b.shop = await (await shop.shopFor(app)).dump();
   const blob = new Blob([JSON.stringify(b, null, 2)], { type: 'application/json' });
   const a = h('a', { href: URL.createObjectURL(blob), download: `zec-ecash-${network}-backup-${b.createdAt.slice(0, 10)}.json` });
   document.body.append(a);
@@ -236,7 +247,7 @@ export function backupNudge(app: App, onDone?: () => void): HTMLElement | null {
   const btn = h('button', { type: 'button', class: 'btn' }, 'Back up now');
   const el = h('div', { class: 'nudge', role: 'note' }, h('p', null, 'Your money lives only on this device. Back it up so you can’t lose it.'), btn);
   btn.onclick = () => {
-    downloadBackup(app);
+    void downloadBackup(app);
     el.remove();
     onDone?.();
   };

@@ -29,9 +29,9 @@ import { status } from './ui/pages/status';
 import { welcome } from './ui/pages/welcome';
 import { withdraw } from './ui/pages/withdraw';
 import { createPrefs } from './ui/prefs';
-import { go, start, type Path } from './ui/router';
+import { go, navKind, start, type Path } from './ui/router';
 import { createShell } from './ui/shell';
-import type { App, Page } from './ui/widgets';
+import { waiting, type App, type Page } from './ui/widgets';
 import { plain, plainOrNull } from './ui/words';
 
 declare const __ZEC_NETWORK__: 'regtest' | 'mainnet';
@@ -72,6 +72,7 @@ const app: App = {
   posreq,
   prefs,
   explain: (e) => plain(core.explain(e)),
+  setShopMode: (on) => setShopMode(on),
   feed: () => buildFeed({ deposits: onchain.deposits(), withdrawals: onchain.withdrawals(), sent: tokens.sent(), received: tokens.received(), requests: posreq.records() }),
   onChange(fn) {
     const a = core.on((e) => e.type !== 'say' && e.type !== 'mint' && fn());
@@ -82,6 +83,42 @@ const app: App = {
     };
   },
 };
+
+type ShopKey = 'charge' | 'invoices' | 'dashboard' | 'shop' | 'invoice' | 'receipt';
+
+/**
+ * A shop page: its code, and the shop's data on this device, load on first use, so the wallet
+ * alone never downloads them. Customer pages (an invoice or receipt link) don't open the shop.
+ */
+function shopPage(key: ShopKey, title: string): Page {
+  return {
+    title,
+    render(app, route) {
+      const el = h('div', { class: 'lazy' }, h('div', { class: 'page' }, h('div', { class: 'working' }, waiting('Loading…'))));
+      let done: (() => void) | undefined;
+      let gone = false;
+      import('./shop/ui').then(
+        async (m) => {
+          const shop = key === 'invoice' || key === 'receipt' ? (null as never) : await m.shopFor(app);
+          if (gone) return;
+          const r = m.pages[key](shop).render(app, route);
+          done = r.cleanup;
+          el.replaceChildren(r.el);
+          shell.afterRender();
+          (r.el.querySelector('.page-title') as HTMLElement | null)?.focus({ preventScroll: true });
+        },
+        (e) => el.replaceChildren(h('div', { class: 'page' }, h('p', { class: 'field-err' }, `This page couldn’t load (${app.explain(e)}). Check your connection and reload.`))),
+      );
+      return {
+        el,
+        cleanup: () => {
+          gone = true;
+          done?.();
+        },
+      };
+    },
+  };
+}
 
 const PAGES: Record<Path, Page> = {
   '/': home,
@@ -94,13 +131,31 @@ const PAGES: Record<Path, Page> = {
   '/status': status,
   '/settings': settings,
   '/welcome': welcome,
+  '/charge': shopPage('charge', 'Charge'),
+  '/invoices': shopPage('invoices', 'Invoices'),
+  '/dashboard': shopPage('dashboard', 'Dashboard'),
+  '/shop': shopPage('shop', 'Shop'),
+  '/invoice': shopPage('invoice', 'Invoice'),
+  '/receipt': shopPage('receipt', 'Receipt'),
 };
 
 /** A wallet that has never held anything: Home starts with the first-run screen. */
 const fresh = () => holdings(MINT_URL).empty && !app.feed().length;
 
 if (MAINNET) document.documentElement.classList.add('mainnet');
-const shell = createShell({ mainnet: MAINNET, mintHost: new URL(MINT_URL).host });
+const shell = createShell({ mainnet: MAINNET, mintHost: new URL(MINT_URL).host, onPersonal: () => setShopMode(false) });
+
+/** Shop mode on or off: the navigation, and the shop's name on the strip. */
+function setShopMode(on: boolean) {
+  prefs.set({ shopMode: on });
+  shell.setMode(on);
+  if (on) void import('./shop/open').then(async (m) => shell.setMode(!!prefs.get().shopMode, (await m.shopFor(app)).profile()?.name ?? ''));
+  go(on ? '/charge' : '/', true);
+}
+if (prefs.get().shopMode) {
+  shell.setMode(true);
+  void import('./shop/open').then(async (m) => shell.setMode(!!prefs.get().shopMode, (await m.shopFor(app)).profile()?.name ?? ''));
+}
 document.getElementById('app')!.replaceWith(shell.root);
 core.on((e) => {
   if (e.type === 'say') {
@@ -127,6 +182,8 @@ start((route) => {
     if (fresh()) return go('/welcome', true);
     prefs.set({ welcomed: true }); // a wallet from before the first-run screen
   }
+  // A shop opens at its counter.
+  if (route.path === '/' && prefs.get().shopMode && navKind() === 'load') return go('/charge', true);
   const page = PAGES[route.path];
   shell.setRoute(route.path);
   document.title = route.path === '/' ? 'zec-ecash wallet' : `${page.title} · zec-ecash`;

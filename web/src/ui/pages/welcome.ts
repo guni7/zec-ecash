@@ -12,7 +12,7 @@ export const welcome: Page = {
     const saved = h('p', { class: 'hint t-ok', hidden: true }, 'Backup saved.');
     const backup = h('button', { type: 'button', class: 'btn block' }, 'Download backup');
     backup.onclick = () => {
-      downloadBackup(app);
+      void downloadBackup(app);
       saved.hidden = false;
     };
     const start = h('button', { type: 'button', class: 'btn primary block big' }, 'Get started');

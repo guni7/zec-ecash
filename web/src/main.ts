@@ -232,6 +232,9 @@ async function checkMint() {
   }
 }
 
+// iOS Safari shows :active (the pressed look) only on pages that listen for touches.
+document.addEventListener('touchstart', () => {}, { passive: true });
+
 // The ecash lives only in this browser's storage: ask it not to clear it under storage pressure.
 void navigator.storage?.persist?.().catch(() => false);
 

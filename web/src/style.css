@@ -184,7 +184,6 @@ a { color: var(--gold); }
 }
 .tab.primary .tab-icon svg { width: 26px; height: 26px; }
 .tab.primary[aria-current='page'] { color: var(--gold); }
-.tab.primary:active .tab-icon { transform: translateY(1px); }
 
 /* sidebar (desktop) */
 .sidebar { display: none; }
@@ -303,7 +302,6 @@ a { color: var(--gold); }
   transition: transform 0.08s, background 0.15s, border-color 0.15s;
 }
 .btn:hover { border-color: var(--muted); }
-.btn:active { transform: translateY(1px); }
 .btn.primary { background: var(--gold); border-color: var(--gold); color: var(--gold-ink); box-shadow: 0 0 0 0 transparent, 0 8px 24px -12px rgba(244, 183, 40, 0.6); }
 .btn.primary:hover { background: var(--gold-hi); }
 .btn.danger { background: var(--bad-strong); border-color: var(--bad); color: #fff; }
@@ -763,14 +761,12 @@ select.input { appearance: auto; }
 .item-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 10px; }
 .item-btn { display: flex; flex-direction: column; justify-content: space-between; gap: 6px; min-height: 84px; padding: 12px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--fg); text-align: left; cursor: pointer; }
 .item-btn:hover { border-color: var(--gold); }
-.item-btn:active { transform: translateY(1px); }
 .item-name { font-weight: 700; }
 .item-price { color: var(--gold); font-size: 13px; }
 .keypad { display: flex; flex-direction: column; gap: 8px; }
 .keypad-display { display: block; padding: 10px 14px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--bg-raised); font: 700 26px var(--font-mono); text-align: right; min-height: 56px; }
 .keys { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
 .key { min-height: 56px; border: 1px solid var(--line-2); border-radius: var(--radius-sm); background: var(--surface-2); color: var(--fg); font: 700 20px var(--font-mono); cursor: pointer; }
-.key:active { background: var(--line-2); }
 .cart { position: sticky; top: 12px; }
 .cart-lines { display: flex; flex-direction: column; gap: 6px; }
 .cart-line { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; gap: 10px; align-items: center; }
@@ -894,3 +890,25 @@ select.input { appearance: auto; }
 /* a file ready to save (iOS shares only right after a tap) */
 .save-sheet { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); z-index: 75; width: min(560px, calc(100% - 32px)); display: grid; gap: 10px; padding: 14px; border: 1px solid var(--gold); border-radius: var(--radius); background: var(--surface-2); box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.8); }
 .save-sheet p { margin: 0; overflow-wrap: anywhere; }
+
+/* ---------- pressed ---------- */
+/* Everything tappable shows the press: it shrinks a little, darkens, and its edge turns gold.
+   iOS applies :active only when the page listens for touches (main.ts does). */
+html { -webkit-tap-highlight-color: transparent; }
+.btn, .icon-btn, .chip, .item-btn, .key, .tab-icon, .side-link, .feed-row, .list-row, .inv-row, .link { transition: transform 0.08s, background-color 0.12s, border-color 0.12s, color 0.12s, filter 0.12s, opacity 0.12s; }
+.btn:not(:disabled):active, .icon-btn:active, .chip:active, .item-btn:active, .key:active { transform: scale(0.96); border-color: var(--gold); background: var(--line-2); }
+.btn.primary:not(:disabled):active, .side-link.primary:active { background: var(--gold); filter: brightness(0.8); }
+.btn.danger:not(:disabled):active { background: var(--bad-strong); filter: brightness(0.8); }
+.tab:active { color: var(--fg); }
+.tab:not(.primary):active .tab-icon { transform: scale(0.86); }
+.tab.primary:active .tab-icon { transform: scale(0.92); filter: brightness(0.8); }
+.feed-row:active, .list-row:active, .inv-row:active, .side-link:active { background: var(--line-2); }
+.link:active { opacity: 0.6; }
+/* touch screens: no hover, so a tapped button doesn't stay lit as if still pressed */
+@media (hover: none) {
+  .btn:hover { border-color: var(--line-2); }
+  .btn.primary:hover { background: var(--gold); border-color: var(--gold); }
+  .chip:hover { border-color: var(--line-2); color: var(--fg); }
+  .item-btn:hover { border-color: var(--line-2); }
+  .feed-row:hover, .list-row:hover, .inv-row:hover { background: transparent; }
+}

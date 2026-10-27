@@ -1,5 +1,5 @@
 // Cash out: a withdrawal (onchain.ts) in plain words.
-import { explorer, parsePaymentUri, zatToZec, type QuotedWithdrawal, type Withdrawal } from '../../wallet/onchain';
+import { explorer, normalizePaymentText, parsePaymentUri, zatToZec, type QuotedWithdrawal, type Withdrawal } from '../../wallet/onchain';
 import { busy, copyChip, h, svg, ICON } from '../dom';
 import { takeHandoff } from '../handoff';
 import { go } from '../router';
@@ -59,7 +59,7 @@ function form(app: App) {
   scanBtn.onclick = async () => {
     const r = await scanQr('Point the camera at their Zcash address');
     if (r && 'text' in r) {
-      address.value = r.text.trim();
+      address.value = normalizePaymentText(r.text);
       invalidate();
       readUri();
     } else if (r && 'error' in r) {
@@ -69,7 +69,7 @@ function form(app: App) {
   };
   const handed = takeHandoff('/withdraw');
   if (handed) {
-    address.value = handed;
+    address.value = normalizePaymentText(handed);
     readUri();
   }
 

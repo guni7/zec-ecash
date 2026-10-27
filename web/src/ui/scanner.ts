@@ -45,6 +45,9 @@ export function scanQr(prompt: string): Promise<ScanResult> {
       },
       { preferredCamera: 'environment', highlightScanRegion: true, highlightCodeOutline: true, returnDetailedScanResult: true, calculateScanRegion: scanRegion },
     );
+    // Light-on-dark codes too (wallets in dark mode). The browser's own barcode reader does this
+    // already; qr-scanner's fallback decoder (Safari, Firefox) reads only dark-on-light by default.
+    scanner.setInversionMode('both');
     const close = openOverlay('scanner', () => {
       scanner.stop();
       scanner.destroy();

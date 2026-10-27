@@ -109,17 +109,41 @@ export function zip321(address: string, zat: number): string {
   return `zcash:${address}?amount=${zatToZec(zat)}`;
 }
 
-/** An address, or a single-payment ZIP-321 URI (zcash:<addr>?amount=<ZEC>&memo=...). */
+/**
+ * A Zcash address as the network expects it. Wallets may show a unified or Sapling address all in
+ * uppercase in a QR code (ZIP-316: it lets the code use the denser alphanumeric mode); bech32
+ * allows all-upper or all-lower, so that is lowercased. Mixed case (invalid) and transparent
+ * addresses (base58, case-sensitive) are left as they are.
+ */
+export function normalizeAddress(a: string): string {
+  const t = a.trim();
+  return /^(U1|UTEST1|UREGTEST1|ZS1|ZTESTSAPLING1|ZREGTESTSAPLING1)[0-9A-Z]+$/.test(t) ? t.toLowerCase() : t;
+}
+
+/** A scanned address or zcash: link as it should read: an uppercase address (and an uppercase
+ * link's scheme and parameter names) in lowercase; parameter values as they are. */
+export function normalizePaymentText(text: string): string {
+  const t = text.trim();
+  if (!/^zcash:/i.test(t)) return normalizeAddress(t);
+  const q = t.indexOf('?');
+  const addr = normalizeAddress(q < 0 ? t.slice(6) : t.slice(6, q));
+  const query = q < 0 ? '' : t.slice(q + 1).replace(/(^|&)([^=&]+)/g, (_, sep: string, k: string) => sep + k.toLowerCase());
+  return `zcash:${addr}${q < 0 ? '' : `?${query}`}`;
+}
+
+/** An address, or a single-payment ZIP-321 URI (zcash:<addr>?amount=<ZEC>&memo=...). The scheme,
+ * the parameter names and an uppercase address may be in uppercase (QR alphanumeric mode). */
 export function parsePaymentUri(text: string): { address: string; amount?: number; note?: string } {
   const t = text.trim();
-  if (!/^zcash:/i.test(t)) return { address: t };
+  if (!/^zcash:/i.test(t)) return { address: normalizeAddress(t) };
   const q = t.indexOf('?');
-  const path = decodeURIComponent(q < 0 ? t.slice(6) : t.slice(6, q));
-  const params = new URLSearchParams(q < 0 ? '' : t.slice(q + 1));
+  const path = normalizeAddress(decodeURIComponent(q < 0 ? t.slice(6) : t.slice(6, q)));
+  const params = new URLSearchParams();
+  for (const [k, v] of new URLSearchParams(q < 0 ? '' : t.slice(q + 1))) params.append(k.toLowerCase(), v);
   if ([...params.keys()].some((k) => /\.\d+$/.test(k))) {
     throw new Error('This payment URI asks for several payments; this wallet sends one at a time.');
   }
-  const address = path || params.get('address') || '';
+  const address = path || normalizeAddress(params.get('address') ?? '');
   if (!address) throw new Error('The payment URI has no address.');
   const amt = params.get('amount');
   let amount: number | undefined;

@@ -6,16 +6,25 @@
 //! the phone then fetches it with a request signed by the request's key, redeems it at the mint
 //! (a swap with NUT-11 witnesses), and acknowledges, after which the server deletes its copy.
 //!
-//!   GET  /requests/{id}/payment   signed "collect"  -> {id, amount, received, state, token?, collected,
-//!                                                      extras: [{n, received, token?, collected}]}
+//!   GET  /requests/{id}/payment   signed "collect"  -> {id, amount, received, state, token?, collected, paid_at,
+//!                                                      expires_at, cancelled_at,
+//!                                                      extras: [{n, kind, received, token?, collected, paid_at}]}
 //!   POST /requests/{id}/ack       signed "ack"      -> {ok}  (only once the proofs are spent)
 //!   POST /requests/{id}/ack?extra=<n>  signed "ack" over "<id>/extra/<n>": the same, for extra payment n
+//!   POST /requests/{id}/cancel    signed "cancel"   -> {ok, cancelled_at}: payments from now on are refused
 //!
-//! Never refused: a payment only the payee can spend. One that loses the race for an UNPAID
+//! paid_at is the server's clock (unix seconds) when it received the payment, so the payee can
+//! tell on-time payments from late ones even if its phone was offline at the time.
+//!
+//! Never lost: a payment only the payee can spend. One that loses the race for an UNPAID
 //! request, or arrives after it is PAID, is kept as extra payment n; one short of the request
-//! (on time or late) is kept as a partial payment n and the request stays as it was. The payee
-//! collects both kinds and can refund them by hand. Only a payment failing a safety check
-//! (mint, unit, exact lock, no locktime/refund/extra keys, DLEQ, unspent, Y not reused) is refused.
+//! (on time or late) is kept as a partial payment n and the request stays as it was. One that
+//! arrives after the request expired or was cancelled is refused (410 "expired: …" /
+//! "cancelled: …": it pays nothing) but, as the payer can't spend it any more, kept as a "late"
+//! payment n for the payee to refund. (The web wallet checks /check first and doesn't pay a
+//! closed request at all.) The payee collects all kinds and can refund them by hand. Only a
+//! payment failing a safety check (mint, unit, exact lock, no locktime/refund/extra keys, DLEQ,
+//! unspent, Y not reused) is refused without being kept.
 //!   GET  /keys/{pubkey}/requests  signed "lookup"   -> {requests: [...]}  (a restored wallet)
 //!
 //! Signed = headers `x-pos-time` (unix seconds, within 60 s of the server's clock) and `x-pos-sig`:
@@ -37,7 +46,7 @@ use cdk_common::wallet::KeysetLoadPolicy;
 use cdk_common::bitcoin::secp256k1::schnorr::Signature;
 use rusqlite::{OptionalExtension, params};
 
-use crate::{Pos, Shared, UNIT, err, now};
+use crate::{Closed, Pos, Shared, UNIT, err, now};
 
 /// How far `x-pos-time` may be from the server's clock.
 pub const SIG_WINDOW_SECS: u64 = 60;
@@ -130,7 +139,8 @@ fn ys_hex(proofs: &Proofs) -> Result<Vec<String>, String> {
 
 /// Delivery of a payment for a locked request: checks, claims the request (PROCESSING), asks the
 /// mint that the proofs are unspent, then stores the token and marks it PAID. Claims nothing.
-pub async fn pay(pos: &Pos, id: &str, quote_amount: u64, key: &PublicKey, p: PaymentRequestPayload) -> Response {
+/// `shut`: the request is expired or cancelled; the payment is refused, kept as a late one.
+pub async fn pay(pos: &Pos, id: &str, quote_amount: u64, key: &PublicKey, p: PaymentRequestPayload, shut: Option<Closed>) -> Response {
     // First: a proof already accepted for any request is refused as such (by Y).
     let ys = match ys_hex(&p.proofs) {
         Ok(ys) => ys,
@@ -158,8 +168,9 @@ pub async fn pay(pos: &Pos, id: &str, quote_amount: u64, key: &PublicKey, p: Pay
     // atomically (of two concurrent payments one wins); one that loses, or arrives after the
     // request is PAID, is kept as an extra payment. A short one is kept as a partial payment and
     // the request stays as it is. The payee collects both kinds and can refund them.
-    let partial = received < quote_amount;
+    let partial = shut.is_none() && received < quote_amount;
     let main = !partial
+        && shut.is_none()
         && match pos.db.lock().unwrap().execute("UPDATE pos_quote SET state = 'PROCESSING' WHERE id = ?1 AND state = 'UNPAID'", [id]) {
             Ok(n) => n == 1,
             Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
@@ -214,7 +225,7 @@ pub async fn pay(pos: &Pos, id: &str, quote_amount: u64, key: &PublicKey, p: Pay
             let n: i64 = tx.query_row("SELECT COALESCE(MAX(n), 0) + 1 FROM pos_extra WHERE quote_id = ?1", [id], |r| r.get(0))?;
             tx.execute(
                 "INSERT INTO pos_extra (quote_id, n, received, token, proofs, paid_at, kind) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-                params![id, n, received as i64, token, proofs_json, now() as i64, if partial { "partial" } else { "extra" }],
+                params![id, n, received as i64, token, proofs_json, now() as i64, if shut.is_some() { "late" } else if partial { "partial" } else { "extra" }],
             )?;
             Some(n)
         };
@@ -222,6 +233,20 @@ pub async fn pay(pos: &Pos, id: &str, quote_amount: u64, key: &PublicKey, p: Pay
         Ok(extra)
     })();
     match stored {
+        Ok(Some(n)) if let Some(c) = shut => {
+            tracing::info!(%id, n, received, closed = ?c, "refused (request closed); kept for the payee to refund");
+            (
+                StatusCode::GONE,
+                Json(serde_json::json!({
+                    "error": c.message(),
+                    "id": id,
+                    "kept": true,
+                    "received": received,
+                    "note": "your payment does not pay this request; it was kept for the shop, who can refund it",
+                })),
+            )
+                .into_response()
+        }
         Ok(None) => {
             tracing::info!(%id, received, "PAID (locked to the payee's key; stored for collection)");
             Json(serde_json::json!({ "id": id, "state": "PAID", "received": received })).into_response()
@@ -273,6 +298,9 @@ struct Locked {
     token: Option<String>,
     proofs: Option<String>,
     collected_at: Option<i64>,
+    paid_at: Option<i64>,
+    expires_at: Option<i64>,
+    cancelled_at: Option<i64>,
 }
 
 fn load(pos: &Pos, id: &str) -> Result<Option<Locked>, Box<Response>> {
@@ -281,24 +309,30 @@ fn load(pos: &Pos, id: &str) -> Result<Option<Locked>, Box<Response>> {
         .lock()
         .unwrap()
         .query_row(
-            "SELECT pubkey, amount, received, state, token, proofs, collected_at FROM pos_quote WHERE id = ?1 AND pubkey IS NOT NULL",
+            "SELECT pubkey, amount, received, state, token, proofs, collected_at, paid_at, expires_at, cancelled_at
+             FROM pos_quote WHERE id = ?1 AND pubkey IS NOT NULL",
             [id],
-            |r| Ok((r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)),
+            |r| {
+                Ok((
+                    (r.get::<_, String>(0)?, r.get::<_, i64>(1)?, r.get::<_, i64>(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?),
+                    (r.get(7)?, r.get(8)?, r.get(9)?),
+                ))
+            },
         )
         .optional()
         .map_err(|e| Box::new(err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}"))))?;
-    let Some((key, amount, received, state, token, proofs, collected_at)) = row else { return Ok(None) };
+    let Some(((key, amount, received, state, token, proofs, collected_at), (paid_at, expires_at, cancelled_at))) = row else { return Ok(None) };
     let key = PublicKey::from_hex(&key).map_err(|e| Box::new(err(StatusCode::INTERNAL_SERVER_ERROR, format!("stored key: {e}"))))?;
-    Ok(Some(Locked { key, amount: amount as u64, received: received as u64, state, token, proofs, collected_at }))
+    Ok(Some(Locked { key, amount: amount as u64, received: received as u64, state, token, proofs, collected_at, paid_at, expires_at, cancelled_at }))
 }
 
-/// Extra and partial payments stored for a request: (n, received, token, proofs, collected_at, kind).
-type Extra = (i64, i64, Option<String>, Option<String>, Option<i64>, String);
+/// Extra, partial and late payments stored for a request: (n, received, token, proofs, collected_at, kind, paid_at).
+type Extra = (i64, i64, Option<String>, Option<String>, Option<i64>, String, i64);
 
 fn extras(pos: &Pos, id: &str) -> Vec<Extra> {
     let db = pos.db.lock().unwrap();
-    let Ok(mut stmt) = db.prepare("SELECT n, received, token, proofs, collected_at, kind FROM pos_extra WHERE quote_id = ?1 ORDER BY n") else { return vec![] };
-    stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?)))
+    let Ok(mut stmt) = db.prepare("SELECT n, received, token, proofs, collected_at, kind, paid_at FROM pos_extra WHERE quote_id = ?1 ORDER BY n") else { return vec![] };
+    stmt.query_map([id], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?, r.get(6)?)))
         .and_then(|it| it.collect())
         .unwrap_or_default()
 }
@@ -313,12 +347,16 @@ fn view(pos: &Pos, id: &str, l: &Locked, with_token: bool) -> serde_json::Value 
         "token": if with_token { l.token.clone() } else { None },
         "has_payment": l.token.is_some() || ex.iter().any(|e| e.2.is_some()),
         "collected": l.collected_at.is_some(),
-        "extras": ex.iter().map(|(n, received, token, _, collected_at, kind)| serde_json::json!({
+        "paid_at": l.paid_at,
+        "expires_at": l.expires_at,
+        "cancelled_at": l.cancelled_at,
+        "extras": ex.iter().map(|(n, received, token, _, collected_at, kind, paid_at)| serde_json::json!({
             "n": n,
             "kind": kind,
             "received": received,
             "token": if with_token { token.clone() } else { None },
             "collected": collected_at.is_some(),
+            "paid_at": paid_at,
         })).collect::<Vec<_>>(),
     })
 }
@@ -398,6 +436,30 @@ pub async fn ack(State(pos): State<Shared>, UrlPath(id): UrlPath<String>, Query(
     }
 }
 
+/// POST /requests/{id}/cancel: the payee closes the request; payments from now on are refused
+/// (and kept as late ones, for the payee to refund). Cancelling twice keeps the first time.
+pub async fn cancel(State(pos): State<Shared>, UrlPath(id): UrlPath<String>, headers: HeaderMap) -> Response {
+    let l = match load(&pos, &id) {
+        Ok(Some(l)) => l,
+        Ok(None) => return err(StatusCode::NOT_FOUND, "unknown payment request"),
+        Err(r) => return *r,
+    };
+    if let Err(r) = authorize(&headers, &l.key, "cancel", &id) {
+        return *r;
+    }
+    let db = pos.db.lock().unwrap();
+    let res = db
+        .execute("UPDATE pos_quote SET cancelled_at = ?2 WHERE id = ?1 AND cancelled_at IS NULL", params![id, now() as i64])
+        .and_then(|_| db.query_row("SELECT cancelled_at FROM pos_quote WHERE id = ?1", [&id], |r| r.get::<_, i64>(0)));
+    match res {
+        Ok(at) => {
+            tracing::info!(%id, "cancelled by the payee");
+            Json(serde_json::json!({ "ok": true, "cancelled_at": at })).into_response()
+        }
+        Err(e) => err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
+    }
+}
+
 /// GET /keys/{pubkey}/requests: which requests use this key (a wallet restored from its seed
 /// re-derives its keys and finds its requests this way).
 pub async fn lookup(State(pos): State<Shared>, UrlPath(pubkey): UrlPath<String>, headers: HeaderMap) -> Response {
@@ -439,7 +501,8 @@ mod tests {
         let sig = sk.sign(msg.as_bytes()).unwrap();
         assert!(sk.public_key().verify(msg.as_bytes(), &sig).is_ok());
         assert!(SecretKey::generate().public_key().verify(msg.as_bytes(), &sig).is_err());
-        // a collect signature is not an ack signature
+        // a collect signature is not an ack signature, nor a cancel one
         assert!(sk.public_key().verify(auth_message("ack", "abc", 1_800_000_000).as_bytes(), &sig).is_err());
+        assert!(sk.public_key().verify(auth_message("cancel", "abc", 1_800_000_000).as_bytes(), &sig).is_err());
     }
 }

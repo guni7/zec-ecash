@@ -16,11 +16,18 @@
 //! - each request carries a NUT-10 P2PK lock to this POS's key, and payments must honour it;
 //! - only our mint URL is accepted.
 //!
-//!   GET  /create?amount=<zat>&unit=zat&pubkey=<hex>  -> {id, request: "creqA..."} (single-use; nut10 P2PK = pubkey, used once)
-//!   GET  /check/{id}                    -> {id, amount, received, state, collected}
+//!   GET  /create?amount=<zat>&unit=zat&pubkey=<hex>[&expires_at=<unix s>][&description=<text>] -> {id, request: "creqA..."}
+//!   GET  /check/{id}                    -> {id, amount, received, state, collected, expires_at, expired, cancelled, now}
 //!   POST /payment                       <- PaymentRequestPayload (NUT-18)
-//!   GET  /requests/{id}/payment, POST /requests/{id}/ack, GET /keys/{pubkey}/requests (signed; src/locked.rs)
+//!   GET  /requests/{id}/payment, POST /requests/{id}/ack, POST /requests/{id}/cancel,
+//!   GET  /keys/{pubkey}/requests (signed; src/locked.rs)
 //!   GET  /health                        -> {ok, unit, mint} (the web page's "is it up?")
+//!
+//! A request is single-use, locked (nut10 P2PK) to `pubkey`, which is used once; the description
+//! (an invoice number, say; at most 64 characters) goes in the request itself. A payment after
+//! expires_at, or after the payee cancelled the request (POST /requests/{id}/cancel, signed;
+//! src/locked.rs), is refused: 410 "expired: …" / "cancelled: …". Requests without expires_at
+//! never expire.
 //!
 //! Listens on 127.0.0.1:8090 (MAINNET 127.0.0.1:9090, loopback only); the web server proxies
 //! https://<host>/pos/* to it, which is also the transport URL in the requests (ZEC_POS_URL).
@@ -255,7 +262,17 @@ async fn run(cfg: Config) -> Result<()> {
         conn.execute_batch("ALTER TABLE pos_extra ADD COLUMN kind TEXT NOT NULL DEFAULT 'extra';")?;
     }
     // Locked requests: the payee's key, and the stored payment until the payee collects it.
-    for (col, ty) in [("pubkey", "TEXT"), ("token", "TEXT"), ("proofs", "TEXT"), ("paid_at", "INTEGER"), ("collected_at", "INTEGER")] {
+    // Expiry, cancel and description (added later; NULL for older requests: they never expire).
+    for (col, ty) in [
+        ("pubkey", "TEXT"),
+        ("token", "TEXT"),
+        ("proofs", "TEXT"),
+        ("paid_at", "INTEGER"),
+        ("collected_at", "INTEGER"),
+        ("expires_at", "INTEGER"),
+        ("cancelled_at", "INTEGER"),
+        ("description", "TEXT"),
+    ] {
         let has: bool = conn.query_row("SELECT COUNT(*) FROM pragma_table_info('pos_quote') WHERE name = ?1", [col], |r| r.get::<_, i64>(0))? > 0;
         if !has {
             conn.execute_batch(&format!("ALTER TABLE pos_quote ADD COLUMN {col} {ty};"))?;
@@ -278,6 +295,7 @@ async fn run(cfg: Config) -> Result<()> {
         .route("/payment", post(payment))
         .route("/requests/{id}/payment", get(locked::collect))
         .route("/requests/{id}/ack", post(locked::ack))
+        .route("/requests/{id}/cancel", post(locked::cancel))
         .route("/keys/{pubkey}/requests", get(locked::lookup))
         .with_state(pos.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await.with_context(|| format!("cannot bind {}", cfg.listen))?;
@@ -404,6 +422,63 @@ struct CreateQuery {
     unit: Option<String>,
     /// The payee's fresh per-request key (hex, compressed). Required on MAINNET.
     pubkey: Option<String>,
+    /// Unix seconds after which payments are refused. None: never expires.
+    expires_at: Option<u64>,
+    /// Put in the request itself (NUT-18 `d`), e.g. an invoice number.
+    description: Option<String>,
+}
+
+/// Longest description accepted (characters): it travels in every QR code of the request.
+pub const MAX_DESCRIPTION: usize = 64;
+
+/// Checks `/create`'s optional expiry and description.
+fn check_create(expires_at: Option<u64>, description: Option<&str>, now: u64) -> Result<(), String> {
+    if let Some(t) = expires_at
+        && t <= now
+    {
+        return Err("expires_at is not in the future".into());
+    }
+    if let Some(d) = description {
+        if d.chars().count() > MAX_DESCRIPTION {
+            return Err(format!("description is longer than {MAX_DESCRIPTION} characters"));
+        }
+        if d.chars().any(char::is_control) {
+            return Err("description has control characters".into());
+        }
+    }
+    Ok(())
+}
+
+/// Why a request takes no more payments, if it doesn't: cancelled (first) or expired.
+pub fn closed(expires_at: Option<i64>, cancelled_at: Option<i64>, now: u64) -> Option<Closed> {
+    if cancelled_at.is_some() {
+        Some(Closed::Cancelled)
+    } else if expires_at.is_some_and(|t| now as i64 > t) {
+        Some(Closed::Expired)
+    } else {
+        None
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Closed {
+    Expired,
+    Cancelled,
+}
+
+impl Closed {
+    /// The refusal the payer's wallet shows (starts with "expired:" or "cancelled:").
+    pub fn message(self) -> &'static str {
+        match self {
+            Closed::Expired => "expired: this payment request has expired; ask the shop for a new one",
+            Closed::Cancelled => "cancelled: the shop cancelled this payment request; ask for a new one",
+        }
+    }
+}
+
+/// The request's expiry and cancel time.
+pub fn closing(conn: &Connection, id: &str) -> rusqlite::Result<(Option<i64>, Option<i64>)> {
+    conn.query_row("SELECT expires_at, cancelled_at FROM pos_quote WHERE id = ?1", [id], |r| Ok((r.get(0)?, r.get(1)?)))
 }
 
 async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Response {
@@ -412,6 +487,10 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
     }
     if q.amount == 0 {
         return err(StatusCode::BAD_REQUEST, "amount must be > 0");
+    }
+    let description = q.description.as_deref().map(str::trim).filter(|d| !d.is_empty());
+    if let Err(m) = check_create(q.expires_at, description, now()) {
+        return err(StatusCode::BAD_REQUEST, m);
     }
     let payee = match q.pubkey.as_deref().map(PublicKey::from_hex) {
         Some(Ok(k)) => Some(k),
@@ -424,7 +503,11 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
     let mut raw = [0u8; 16];
     rand::rngs::OsRng.fill_bytes(&mut raw);
     let id = hex::encode(raw);
-    let request = PaymentRequest::builder()
+    let mut builder = PaymentRequest::builder();
+    if let Some(d) = description {
+        builder = builder.description(d);
+    }
+    let request = builder
         .payment_id(id.clone())
         .amount(Amount::from(q.amount))
         .unit(CurrencyUnit::custom(UNIT))
@@ -443,8 +526,8 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
         ))
         .build();
     let res = pos.db.lock().unwrap().execute(
-        "INSERT INTO pos_quote (id, amount, state, created_at, pubkey) VALUES (?1, ?2, 'UNPAID', ?3, ?4)",
-        params![id, q.amount as i64, now() as i64, payee.map(|k| k.to_hex())],
+        "INSERT INTO pos_quote (id, amount, state, created_at, pubkey, expires_at, description) VALUES (?1, ?2, 'UNPAID', ?3, ?4, ?5, ?6)",
+        params![id, q.amount as i64, now() as i64, payee.map(|k| k.to_hex()), q.expires_at.map(|t| t as i64), description],
     );
     match res {
         Ok(_) => {}
@@ -453,7 +536,7 @@ async fn create(State(pos): State<Shared>, Query(q): Query<CreateQuery>) -> Resp
         }
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
     }
-    tracing::info!(%id, amount = q.amount, "payment request created");
+    tracing::info!(%id, amount = q.amount, expires_at = ?q.expires_at, "payment request created");
     Json(serde_json::json!({ "id": id, "request": request.to_string() })).into_response()
 }
 
@@ -465,16 +548,30 @@ struct QuoteView {
     state: String,
     /// Locked requests: the payee has collected the payment (the server's copy is deleted).
     collected: bool,
+    /// Unix seconds; null: never expires.
+    expires_at: Option<i64>,
+    /// No more payments: past expires_at, or cancelled.
+    expired: bool,
+    cancelled: bool,
+    /// The server's clock (unix seconds), so a payer can tell how long is left without trusting its own.
+    now: u64,
 }
 
 fn load_quote(conn: &Connection, id: &str) -> rusqlite::Result<Option<QuoteView>> {
-    conn.query_row("SELECT id, amount, received, state, collected_at FROM pos_quote WHERE id = ?1", [id], |r| {
+    let t = now();
+    conn.query_row("SELECT id, amount, received, state, collected_at, expires_at, cancelled_at FROM pos_quote WHERE id = ?1", [id], |r| {
+        let (expires_at, cancelled_at): (Option<i64>, Option<i64>) = (r.get(5)?, r.get(6)?);
+        let c = closed(expires_at, cancelled_at, t);
         Ok(QuoteView {
             id: r.get(0)?,
             amount: r.get::<_, i64>(1)? as u64,
             received: r.get::<_, i64>(2)? as u64,
             state: r.get(3)?,
             collected: r.get::<_, Option<i64>>(4)?.is_some(),
+            expires_at,
+            expired: c == Some(Closed::Expired),
+            cancelled: c == Some(Closed::Cancelled),
+            now: t,
         })
     })
     .optional()
@@ -531,9 +628,15 @@ async fn payment(State(pos): State<Shared>, Json(p): Json<PaymentRequestPayload>
         Ok(k) => k,
         Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
     };
+    // Expired or cancelled: refused. Locked: refused, but kept for the payee to refund once it
+    // passes the checks, since the payer can no longer spend proofs locked to the payee's key.
+    let shut = match closing(&pos.db.lock().unwrap(), &id) {
+        Ok((e, c)) => closed(e, c, now()),
+        Err(e) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("db: {e}")),
+    };
     // Locked requests: a late or losing payment becomes an extra payment (src/locked.rs).
     match payee.as_deref().map(PublicKey::from_hex) {
-        Some(Ok(key)) => return locked::pay(&pos, &id, quote.amount, &key, p).await,
+        Some(Ok(key)) => return locked::pay(&pos, &id, quote.amount, &key, p, shut).await,
         Some(Err(e)) => return err(StatusCode::INTERNAL_SERVER_ERROR, format!("stored key: {e}")),
         None if pos.mainnet => {
             return err(StatusCode::GONE, "this is a legacy request (paid into the POS's own wallet), not accepted on MAINNET; ask for a new one");
@@ -541,6 +644,9 @@ async fn payment(State(pos): State<Shared>, Json(p): Json<PaymentRequestPayload>
         None => {}
     }
     // LEGACY (devnet): redeem into the POS wallet.
+    if let Some(c) = shut {
+        return err(StatusCode::GONE, c.message());
+    }
     if quote.state != "UNPAID" {
         return err(StatusCode::CONFLICT, format!("request is already {}", quote.state));
     }
@@ -579,5 +685,56 @@ async fn payment(State(pos): State<Shared>, Json(p): Json<PaymentRequestPayload>
                 .execute("UPDATE pos_quote SET state = 'UNPAID' WHERE id = ?1 AND state = 'PROCESSING'", [&id]);
             err(StatusCode::BAD_REQUEST, format!("the mint did not accept the proofs: {e}"))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn create_checks_expiry_and_description() {
+        assert!(check_create(None, None, 100).is_ok());
+        assert!(check_create(Some(101), Some("INV-0001"), 100).is_ok());
+        assert!(check_create(Some(100), None, 100).unwrap_err().contains("not in the future"));
+        assert!(check_create(None, Some(&"x".repeat(MAX_DESCRIPTION + 1)), 100).unwrap_err().contains("longer"));
+        assert!(check_create(None, Some("a\nb"), 100).unwrap_err().contains("control"));
+    }
+
+    #[test]
+    fn closed_requests() {
+        // older requests (no expiry) stay open
+        assert_eq!(closed(None, None, u64::MAX / 2), None);
+        assert_eq!(closed(Some(100), None, 100), None, "open up to and including expires_at");
+        assert_eq!(closed(Some(100), None, 101), Some(Closed::Expired));
+        assert_eq!(closed(Some(100), Some(50), 101), Some(Closed::Cancelled), "cancelled wins");
+        assert_eq!(closed(None, Some(50), 60), Some(Closed::Cancelled));
+        assert!(Closed::Expired.message().starts_with("expired:"));
+        assert!(Closed::Cancelled.message().starts_with("cancelled:"));
+    }
+
+    /// The schema in a scratch database: old rows (no expiry) read back as open.
+    #[test]
+    fn closing_reads_the_row() {
+        let c = Connection::open_in_memory().unwrap();
+        c.execute_batch(
+            "CREATE TABLE pos_quote (id TEXT PRIMARY KEY, amount INTEGER, received INTEGER DEFAULT 0, state TEXT, created_at INTEGER,
+               collected_at INTEGER, expires_at INTEGER, cancelled_at INTEGER);
+             INSERT INTO pos_quote (id, amount, state, created_at) VALUES ('old', 5, 'UNPAID', 1);
+             INSERT INTO pos_quote (id, amount, state, created_at, expires_at) VALUES ('soon', 5, 'UNPAID', 1, 1000);
+             INSERT INTO pos_quote (id, amount, state, created_at, cancelled_at) VALUES ('gone', 5, 'UNPAID', 1, 2);",
+        )
+        .unwrap();
+        let at = |id: &str, t: u64| {
+            let (e, x) = closing(&c, id).unwrap();
+            closed(e, x, t)
+        };
+        assert_eq!(at("old", 5_000_000_000), None);
+        assert_eq!(at("soon", 999), None);
+        assert_eq!(at("soon", 1001), Some(Closed::Expired));
+        assert_eq!(at("gone", 3), Some(Closed::Cancelled));
+        let q = load_quote(&c, "soon").unwrap().unwrap();
+        assert_eq!(q.expires_at, Some(1000));
+        assert!(q.expired, "now() is far past 1000");
     }
 }

@@ -19,9 +19,31 @@ export const send: Page = {
 /** Compact (no DLEQ proofs, half the size) only for unlocked codes made online; Settings can turn it off. */
 const autoCompact = (app: App) => app.core.settings().compact && navigator.onLine && app.core.mintUp() !== false;
 
+/** Connected: the network is up and the mint answers (null: not asked yet). */
+export const online = (app: App) => navigator.onLine && app.core.mintUp() !== false;
+
+/** A big choice button; disabled with a short reason under it. */
+export function choice(label: string, icon: string, opts: { primary?: boolean; off?: string; onclick: () => void }) {
+  const btn = h('button', { type: 'button', class: `btn block big ${opts.primary ? 'primary' : ''}`, disabled: !!opts.off }, svg(icon), label);
+  btn.onclick = opts.onclick;
+  return h('div', { class: 'choice' }, btn, opts.off ? h('p', { class: 'choice-off' }, opts.off) : null);
+}
+
+/** Redraws `draw` when the connection comes or goes; returns the cleanup. */
+export function onConnectivity(app: App, draw: () => void) {
+  addEventListener('online', draw);
+  addEventListener('offline', draw);
+  const off = app.core.on((e) => e.type === 'mint' && draw());
+  return () => {
+    removeEventListener('online', draw);
+    removeEventListener('offline', draw);
+    off();
+  };
+}
+
 function start(app: App) {
   const body = h('div', { class: 'flow' });
-  /** What is showing: no money yet, the two choices, or a flow (the amount, a confirmation). */
+  /** What is showing: no money yet, the three choices, or a flow (the amount, a confirmation). */
   let mode: 'empty' | 'start' | 'flow' = 'start';
   const ctx: Ctx = {
     app,
@@ -31,7 +53,7 @@ function start(app: App) {
     },
     restart: () => draw(),
   };
-  /** The two choices: scan their code (it brings its amount, or asks after), or show a code. */
+  /** Three choices; offline, "without internet" first and the rest greyed with why. */
   const draw = () => {
     if (app.core.balance() === 0) {
       mode = 'empty';
@@ -39,10 +61,24 @@ function start(app: App) {
       return;
     }
     mode = 'start';
+    const up = online(app);
+    const needNet = up ? undefined : 'Needs a connection.';
     const scan = scanBlock({ label: 'Scan their code', prompt: 'Point the camera at their code', onText: (t) => handleCode(ctx, t, 'send', scan.say) });
-    const show = h('button', { type: 'button', class: 'btn block big' }, svg(ICON.request), 'Show a code');
-    show.onclick = () => ctx.show(showAmount());
-    body.replaceChildren(h('div', { class: 'choices' }, scan.el, h('div', { class: 'or', 'aria-hidden': 'true' }, 'or'), show));
+    if (!up) {
+      scan.scan.disabled = true;
+      scan.el.querySelector('.link-btn')?.setAttribute('hidden', '');
+      scan.el.append(h('p', { class: 'choice-off' }, needNet!));
+    }
+    const show = choice('Show a code', ICON.request, { off: needNet, onclick: () => ctx.show(showAmount()) });
+    const without = choice('Send without internet', ICON.send, {
+      off: up ? undefined : 'Your phone needs a connection for a moment to lock the money to them; their phone can stay offline.',
+      onclick: () => ctx.show(sendOffline()),
+    });
+    const or = () => h('div', { class: 'or', 'aria-hidden': 'true' }, 'or');
+    body.replaceChildren(
+      up ? '' : h('p', { class: 'offline-note', role: 'status' }, 'You’re offline. Sending needs a connection; the person you pay can be offline.'),
+      h('div', { class: 'choices' }, ...(up ? [scan.el, or(), show, without] : [without, scan.el, show])),
+    );
   };
   /** How much, then the code anyone can take. */
   const showAmount = () => {
@@ -75,9 +111,29 @@ function start(app: App) {
       h('div', { class: 'confirm-actions' }, make, h('button', { type: 'button', class: 'btn ghost', onclick: () => draw() }, 'Cancel')),
     );
   };
+  /** For someone with no internet: scan their receive code, then the amount, then a locked code. */
+  const sendOffline = () => {
+    const scan = scanBlock({ label: 'Scan their code', prompt: 'Point the camera at their receive code', onText: (t) => handleCode(ctx, t, 'send', scan.say) });
+    return h(
+      'div',
+      { class: 'confirm' },
+      h('p', { class: 'confirm-label' }, 'Send without internet'),
+      h('p', { class: 'warn-line info' }, 'Ask them to open Receive → Receive without internet, then scan their code.'),
+      scan.el,
+      h('button', { type: 'button', class: 'btn ghost block', onclick: () => draw() }, 'Cancel'),
+    );
+  };
   draw();
   const el = h('div', { class: 'page' }, pageHead('Send'), body);
-  return { el, cleanup: app.onChange(() => mode === 'empty' && app.core.balance() > 0 && draw()) };
+  const offNet = onConnectivity(app, () => mode !== 'flow' && draw());
+  const off = app.onChange(() => mode === 'empty' && app.core.balance() > 0 && draw());
+  return {
+    el,
+    cleanup: () => {
+      offNet();
+      off();
+    },
+  };
 }
 
 /** A code made on this phone: shown until it is picked up, or the result of paying someone's code. */
@@ -95,7 +151,7 @@ function tokenView(app: App, s0: SentToken, outcome: string | null) {
     if (s.state !== 'pending') clearInterval(timer);
     if (s.request) body.replaceChildren(requestResult(app, s, outcome));
     else if (s.state === 'pending') body.replaceChildren(...showing(app, s));
-    else if (s.state === 'received') body.replaceChildren(resultView({ ok: true, title: 'Picked up', zat: s.amount, sign: '−', text: 'They have the money.' }));
+    else if (s.state === 'received') body.replaceChildren(resultView({ ok: true, title: 'Picked up ✓', zat: s.amount, sign: '−', text: 'They have the money.' }));
     else body.replaceChildren(resultView({ ok: true, title: 'Taken back', zat: s.amount, sign: '+', text: 'The money is back in your wallet; the code no longer works.' }));
   };
   draw();
@@ -120,7 +176,7 @@ function showing(app: App, s: SentToken): Node[] {
 
   const cancelArea = h('div', { class: 'stack' });
   if (!s.lockedTo) {
-    const ask = h('button', { type: 'button', class: 'btn block danger-outline' }, 'Cancel and take it back');
+    const ask = h('button', { type: 'button', class: 'btn block danger-outline' }, 'Take it back');
     ask.onclick = () => {
       const yes = h('button', { type: 'button', class: 'btn danger' }, 'Yes, take it back');
       const no = h('button', { type: 'button', class: 'btn ghost' }, 'Keep it');
@@ -146,7 +202,7 @@ function showing(app: App, s: SentToken): Node[] {
     qrCard(s.token, { label: `QR code for ${moneyText(s.amount)}`, ecc: 'L' }),
     h('div', { class: 'row thumb-row' }, share, copy),
     h('p', { class: 'warn-line' }, s.lockedTo ? 'Show this to them. Only they can take this money.' : 'Anyone who scans this can take the money, like handing over cash.'),
-    h('div', { class: 'status-line' }, waiting('Waiting for them to scan…')),
+    h('div', { class: 'status-line' }, waiting('Waiting for them…')),
     cancelArea,
     details(
       kv('Kind', s.lockedTo ? 'locked (P2PK), with DLEQ proofs' : s.compact ? 'compact token (no DLEQ proofs)' : 'token with DLEQ proofs'),

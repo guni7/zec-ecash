@@ -1,5 +1,6 @@
 import type { ExtraPayment, PosRecord } from '../../wallet/posreq';
-import { PosOfflineError } from '../../wallet/pos';
+import { posOnline } from '../../wallet/pos';
+import { choice, onConnectivity, online } from './send';
 import { busy, copyChip, copyText, h, svg, ICON } from '../dom';
 import { backupNudge, handleCode, scanBlock, type Ctx } from '../flows';
 import { qrCard } from '../qr';
@@ -12,29 +13,56 @@ export const receive: Page = {
   render(app, route) {
     const id = route.params.get('r');
     const rec = id ? app.posreq.records().find((r) => r.id === id) : undefined;
-    return rec ? requestView(app, rec) : start(app);
+    return rec ? requestView(app, rec, Number(route.params.get('served') ?? 0)) : start(app);
   },
 };
 
-const online = (app: App) => navigator.onLine && app.core.mintUp() !== false;
-
 function start(app: App) {
   const body = h('div', { class: 'flow' });
-  const ctx: Ctx = { app, show: (v) => body.replaceChildren(v), restart: () => draw() };
-  const scanner = () => {
-    const s = scanBlock({ label: 'Scan their code', prompt: 'Point the camera at their code', onText: (t) => handleCode(ctx, t, 'receive', s.say) });
+  let mode: 'start' | 'flow' = 'start';
+  const ctx: Ctx = {
+    app,
+    show: (v) => {
+      mode = 'flow';
+      body.replaceChildren(v);
+    },
+    restart: () => draw(),
+  };
+  const scanner = (primary = true) => {
+    const s = scanBlock({ label: 'Scan their code', prompt: 'Point the camera at their code', primary, onText: (t) => handleCode(ctx, t, 'receive', s.say) });
     return s;
   };
-
-  const draw = () => {
-    const mine = h('button', { type: 'button', class: 'btn block big' }, svg(ICON.request), 'Show my code');
-    mine.onclick = () => (online(app) ? askAmount() : keyView('offline'));
-    body.replaceChildren(h('div', { class: 'choices' }, scanner().el, h('div', { class: 'or', 'aria-hidden': 'true' }, 'or'), mine));
+  /** Is the payment-request service up? null until the first check answers. */
+  let posUp: boolean | null = null;
+  const probe = async () => {
+    const up = await posOnline();
+    if (up !== posUp) {
+      posUp = up;
+      if (mode === 'start') draw();
+    }
   };
 
-  /** Optional amount, then a payment code locked to a fresh key; no amount: the key code. */
+  /** Three choices; offline, "without internet" first, and Request an amount greyed with why. */
+  const draw = () => {
+    mode = 'start';
+    const up = online(app);
+    const request = choice('Request an amount', ICON.request, {
+      off: !up ? 'Needs a connection.' : posUp === false ? 'Payment requests are unavailable right now; Receive without internet still works.' : undefined,
+      onclick: askAmount,
+    });
+    const without = choice('Receive without internet', ICON.receive, { primary: !up, onclick: keyView });
+    const or = () => h('div', { class: 'or', 'aria-hidden': 'true' }, 'or');
+    body.replaceChildren(
+      up ? '' : h('p', { class: 'offline-note', role: 'status' }, 'You’re offline. You can still receive money locked to you: show your code, then scan theirs.'),
+      h('div', { class: 'choices' }, ...(up ? [scanner().el, or(), request, without] : [without, scanner(false).el, request])),
+    );
+  };
+
+  /** An amount, then a payment request (NUT-18) locked to a fresh key; shop mode keeps it open. */
   const askAmount = () => {
-    const amount = amountEntry({ optional: true, autofocus: true, label: 'Amount (optional)' });
+    const amount = amountEntry({ autofocus: true });
+    const shop = h('input', { type: 'checkbox', class: 'switch', role: 'switch', checked: !!app.prefs.get().shop });
+    shop.onchange = () => app.prefs.set({ shop: shop.checked });
     const show = h('button', { type: 'submit', class: 'btn primary block big' }, 'Show code');
     const form = h(
       'form',
@@ -48,52 +76,55 @@ function start(app: App) {
           } catch {
             return;
           }
-          if (zat === null) return keyView('no-amount');
           void busy(
             show,
             async () => {
-              try {
-                const rec = await app.posreq.create(zat!);
-                go(`/receive?r=${encodeURIComponent(rec.id)}`);
-              } catch (err) {
-                if (err instanceof PosOfflineError || app.core.isNetworkError(err)) return keyView(navigator.onLine ? 'no-service' : 'offline');
-                throw err;
-              }
+              const rec = await app.posreq.create(zat!);
+              go(`/receive?r=${encodeURIComponent(rec.id)}`);
             },
             app.explain,
           );
         },
       },
-      h('p', { class: 'confirm-label' }, 'How much? (optional)'),
+      h('p', { class: 'confirm-label' }, 'Request an amount'),
       amount.el,
+      h('label', { class: 'toggle' }, shop, h('span', null, h('strong', null, 'Keep open for the next customer'), h('small', null, 'After each payment, a new request for the same amount appears.'))),
       h('div', { class: 'confirm-actions' }, show, h('button', { type: 'button', class: 'btn ghost', onclick: draw }, 'Cancel')),
     );
     ctx.show(form);
-    amount.input.focus();
   };
 
   /** This wallet's key as a QR: they lock money to it and show a code back, which works offline. */
-  const keyView = (why: 'offline' | 'no-amount' | 'no-service') => {
+  const keyView = () => {
     const pub = app.core.me.pub;
-    const line = {
-      offline: 'You’re offline. They scan this, then show you a code back: scan it to receive.',
-      'no-amount': 'They scan this and choose the amount, then show you a code back: scan it to receive.',
-      'no-service': 'Payment codes are unavailable right now. They scan this, then show you a code back: scan it to receive.',
-    }[why];
     ctx.show(
       h(
         'div',
         { class: 'flow' },
+        h('p', { class: 'confirm-label' }, 'Receive without internet'),
         qrCard(pub, { label: 'QR code of your receive code', ecc: 'M' }),
-        h('p', { class: 'warn-line info' }, line),
+        h('p', { class: 'warn-line info' }, 'They’ll scan this, then show you a code back to scan.'),
         scanner().el,
         details(kv('Your key', copyChip(pub, 'Key', 10, 8)), h('p', { class: 'hint' }, 'Your public key. Tokens locked to it (P2PK) with DLEQ proofs can be received with no network and are redeemed when you are back online.')),
+        h('button', { type: 'button', class: 'btn ghost block', onclick: draw }, 'Back'),
       ),
     );
   };
 
   draw();
-  return { el: h('div', { class: 'page' }, pageHead('Receive'), body) };
+  void probe();
+  const timer = setInterval(() => online(app) && void probe(), 15_000);
+  const offNet = onConnectivity(app, () => {
+    if (mode === 'start') draw();
+    if (online(app)) void probe();
+  });
+  return {
+    el: h('div', { class: 'page' }, pageHead('Receive'), body),
+    cleanup: () => {
+      clearInterval(timer);
+      offNet();
+    },
+  };
 }
 
 /** Total of partial payments on a request that is still unpaid. */
@@ -145,8 +176,53 @@ function extraRow(app: App, rec: PosRecord, x: ExtraPayment) {
 }
 
 /** A payment code this phone showed: the QR until paid, then Received; extra and partial payments. */
-function requestView(app: App, r0: PosRecord) {
+function requestView(app: App, r0: PosRecord, served: number) {
   const top = h('div', { class: 'flow' });
+  /** Shop mode: after each payment, a new request for the same amount ("Keep open for the next customer"). */
+  const shopBox = h('input', { type: 'checkbox', class: 'switch', role: 'switch', checked: !!app.prefs.get().shop });
+  const shopLine = h('span', { class: 'shop-count mono' });
+  const showShop = () => (shopLine.textContent = app.prefs.get().shop ? `Shop mode · ${served} paid` : '');
+  shopBox.onchange = () => {
+    app.prefs.set({ shop: shopBox.checked });
+    showShop();
+  };
+  showShop();
+  const shopToggle = h('label', { class: 'toggle' }, shopBox, h('span', null, h('strong', null, 'Keep open for the next customer'), h('small', null, 'After each payment, a new request for the same amount appears.')));
+  let next: ReturnType<typeof setTimeout> | undefined;
+  /** Paid, in shop mode: count down, then the next request for the same amount. */
+  const nextCustomer = (zat: number) => {
+    const line = h('span', null, 'Next customer in 3…');
+    const stop = h('button', { type: 'button', class: 'btn block' }, 'Stop');
+    shopLine.textContent = `Shop mode · ${served + 1} paid`;
+    top.replaceChildren(resultView({ ok: true, title: 'Paid ✓', zat, sign: '+', text: line, actions: [stop] }));
+    let n = 3;
+    const tick = () => {
+      if (--n > 0) {
+        line.textContent = `Next customer in ${n}…`;
+        next = setTimeout(tick, 1000);
+        return;
+      }
+      line.textContent = 'Opening the next request…';
+      app.posreq.create(r0.amount).then(
+        (rec) => go(`/receive?r=${encodeURIComponent(rec.id)}&served=${served + 1}`, true),
+        (e) => {
+          line.textContent = app.explain(e);
+          const again = h('button', { type: 'button', class: 'btn primary block' }, 'Try again');
+          again.onclick = () => nextCustomer(zat);
+          stop.before(again);
+        },
+      );
+    };
+    next = setTimeout(tick, 1000);
+    stop.onclick = () => {
+      clearTimeout(next);
+      app.prefs.set({ shop: false });
+      shopBox.checked = false;
+      showShop();
+      line.textContent = 'Shop mode stopped.';
+      stop.remove();
+    };
+  };
   const err = h('p', { class: 'inline-msg t-bad' });
   const extrasBox = h('div');
   /** "Received X of Y" above the QR while partial payments are in. */
@@ -164,10 +240,13 @@ function requestView(app: App, r0: PosRecord) {
       qrCard(r0.request, { label: `QR code asking for ${moneyText(r0.amount)}`, ecc: 'M' }),
       h('div', { class: 'row thumb-row' }, share, h('button', { type: 'button', class: 'btn', onclick: () => void copyText(r0.request!, 'Code') }, svg(ICON.copy), 'Copy')),
       state,
+      shopToggle,
     );
   }
   let shown = '';
   let shownExtras = '';
+  /** Shop mode moves on only from a payment seen arriving here, not when reopening a paid request. */
+  const sawOpen = r0.state === 'open';
   const render = () => {
     const r = app.posreq.records().find((x) => x.id === r0.id) ?? r0;
     err.textContent = r.state !== 'done' && r.error ? app.explain(new Error(r.error)) : '';
@@ -185,8 +264,13 @@ function requestView(app: App, r0: PosRecord) {
     partialLine.hidden = !(r.state === 'open' && partialSum(r));
     partialLine.textContent = `Received ${moneyText(partialSum(r))} of ${moneyText(r.amount)} · still unpaid`;
     const key = r.state === 'done' ? 'done' : r.state === 'open' ? 'open' : 'paid';
-    if (key === shown) return;
+    if (key === shown || shown === 'next') return;
     shown = key;
+    // A shop doesn't wait for the money to be collected: it's paid, so the next customer is up.
+    if (key !== 'open' && app.prefs.get().shop && sawOpen) {
+      shown = 'next';
+      return nextCustomer(r.received ?? r.amount);
+    }
     if (key === 'done') {
       top.replaceChildren(resultView({ ok: true, title: 'Received', zat: r.collected ?? r.received ?? r.amount, sign: '+', extra: backupNudge(app) }));
     } else {
@@ -202,7 +286,7 @@ function requestView(app: App, r0: PosRecord) {
   const el = h(
     'div',
     { class: 'page' },
-    pageHead('Receive', { back: true }),
+    pageHead('Receive', { back: true, right: shopLine }),
     top,
     err,
     extrasBox,
@@ -216,6 +300,7 @@ function requestView(app: App, r0: PosRecord) {
     el,
     cleanup: () => {
       clearInterval(timer);
+      clearTimeout(next);
       off();
     },
   };

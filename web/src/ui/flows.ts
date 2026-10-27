@@ -163,7 +163,7 @@ export function lockedSend(ctx: Ctx, pubkey: string, preset: number | null): Nod
     },
     h('p', { class: 'confirm-label' }, 'Send to this person'),
     amount.el,
-    h('p', { class: 'warn-line' }, 'Only they can take this money. You can’t take it back.'),
+    h('p', { class: 'warn-line' }, 'Only they can take this money, even with no internet. You can’t take it back.'),
     h('div', { class: 'confirm-actions' }, send, cancelBtn(ctx)),
     details(kv('Their key', copyChip(pubkey, 'Key', 8, 6)), h('p', { class: 'hint' }, 'Locked to their public key (P2PK), with DLEQ proofs, so they can accept it even offline.')),
   );

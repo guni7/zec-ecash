@@ -4,7 +4,8 @@
 import { loadJson, saveJson } from '../wallet/core';
 import { setZatsFirst } from './words';
 
-export type Prefs = { zatsFirst?: boolean; welcomed?: boolean; backupAt?: number };
+/** shop: Receive's 'Keep open for the next customer' (a new request after each payment). */
+export type Prefs = { zatsFirst?: boolean; welcomed?: boolean; backupAt?: number; shop?: boolean };
 
 export function createPrefs(storeKey: string) {
   let prefs = loadJson<Prefs>(storeKey, {});

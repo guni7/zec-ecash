@@ -1,4 +1,5 @@
-// What the pages remember about this person, beside the wallet itself: zats or ZEC first, the
+// What the pages remember about this person, beside the wallet itself: zats or ZEC first (zats
+// unless they chose ZEC), the
 // first-run screen seen, and when a backup was last downloaded. Stored with the wallet's own
 // entries (zec-ecash-demo:ui:<mint>), so a backup carries it and a reset clears it.
 import { loadJson, saveJson } from '../wallet/core';
@@ -9,13 +10,13 @@ export type Prefs = { zatsFirst?: boolean; welcomed?: boolean; backupAt?: number
 
 export function createPrefs(storeKey: string) {
   let prefs = loadJson<Prefs>(storeKey, {});
-  setZatsFirst(!!prefs.zatsFirst);
+  setZatsFirst(prefs.zatsFirst ?? true);
   return {
     get: (): Readonly<Prefs> => prefs,
     set(patch: Partial<Prefs>) {
       prefs = { ...prefs, ...patch };
       saveJson(storeKey, prefs);
-      setZatsFirst(!!prefs.zatsFirst);
+      setZatsFirst(prefs.zatsFirst ?? true);
     },
   };
 }

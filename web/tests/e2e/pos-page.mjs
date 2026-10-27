@@ -44,8 +44,6 @@ const balance = async (p) => {
   return p.eval(`Number(document.querySelector('.money.balance .m-sub').textContent.replace(/[^0-9]/g, ''))`);
 };
 const shot = (p, name) => p.screenshot(join(OUT, `${name}.png`), false);
-/** zats as the ZEC the amount fields take: 1500 -> '0.000015'. */
-const zec = (n) => (n / 1e8).toFixed(8).replace(/0+$/, '');
 const btn = (re, scope = 'main') => `[...document.querySelector(${J(scope)}).querySelectorAll('button')].find((b) => ${re}.test(b.textContent.trim()))`;
 const result = `(document.querySelector('.result-title')?.textContent ?? '')`;
 const main = `document.querySelector('main').textContent`;
@@ -55,7 +53,7 @@ async function createRequest(p, amount) {
   await nav(p, '/receive');
   await p.eval(`${btn('/^Request an amount$/')}.click()`);
   await p.waitFor(`!!document.querySelector('.confirm .amount-input')`, 5000);
-  await p.eval(fill('.confirm .amount-input', zec(amount)));
+  await p.eval(fill('.confirm .amount-input', String(amount)));
   await p.eval(`${btn('/^Show code$/')}.click()`);
   await p.waitFor(`location.hash.startsWith('#/receive?r=')`, 15000);
   const id = decodeURIComponent(await p.eval(`location.hash.split('r=')[1]`));
@@ -142,7 +140,7 @@ try {
   await fund(B, sh('./target/release/zec-ecash-cli', ['send', '1000']).match(/cashuB[A-Za-z0-9_-]+/)[0]);
   await paste(B, '/send', r2.creq);
   await B.waitFor(`/Pay this code/.test(${main})`, 5000);
-  check(/0\.000008 ZEC/.test(await B.eval(txt('.confirm'))) && /Locked to/.test(await B.eval(txt('.confirm .details'))), `payer page reads the request: ${(await B.eval(txt('.confirm'))).slice(0, 60)}`);
+  check(/800 zats/.test(await B.eval(txt('.confirm'))) && /Locked to/.test(await B.eval(txt('.confirm .details'))), `payer page reads the request: ${(await B.eval(txt('.confirm'))).slice(0, 60)}`);
   await B.eval(`${btn('/^Pay /')}.click()`);
   await B.waitFor(`/Paid/.test(${result})`, 20000);
   await shot(B, 'payer-paid');
@@ -194,14 +192,14 @@ try {
   check(/extra/.test(sh('./target/release/zec-ecash-cli', ['pay', r4.creq])), 'a late payment (request already PAID) becomes extra payment 2');
   await nav(A, `/request?r=${r4.id}`);
   await A.waitFor(`/Received/.test(${result}) && document.querySelectorAll('.extra').length === 2 && [...document.querySelectorAll('.extra')].every(e => /in your wallet/.test(e.textContent))`, 40000);
-  check((await A.eval(`[...document.querySelectorAll('.extra strong')].map(e => e.textContent).join(' | ')`)) === 'Extra payment received: 0.000006 ZEC | Extra payment received: 0.000006 ZEC', 'Receive page: "Extra payment received: 0.000006 ZEC" twice');
+  check((await A.eval(`[...document.querySelectorAll('.extra strong')].map(e => e.textContent).join(' | ')`)) === 'Extra payment received: 600 zats | Extra payment received: 600 zats', 'Receive page: "Extra payment received: 600 zats" twice');
   check(sql(`SELECT COUNT(*) FROM pos_extra WHERE quote_id='${r4.id}' AND token IS NULL AND collected_at IS NOT NULL`) === '2', "both extra payments collected; server's copies deleted");
   await sleep(500);
   await A.eval(`document.querySelector('.extra').scrollIntoView({ block: 'center' })`);
   await shot(A, 'request-extra-payments');
   check((await balance(A)) === before + 1800, `phone collected the main payment and both extras: balance ${before} + 1,800`);
   await nav(A, '/activity');
-  check(/Extra payment received.*in your wallet/.test(await A.eval(main)) && /\+0\.000006 ZEC/.test(await A.eval(main)), 'Activity shows "Extra payment received" +0.000006 ZEC');
+  check(/Extra payment received.*in your wallet/.test(await A.eval(main)) && /\+600 zats/.test(await A.eval(main)), 'Activity shows "Extra payment received" +600 zats');
   await shot(A, 'activity-extra');
   // refund 1: unlocked
   await nav(A, `/request?r=${r4.id}`);
@@ -230,13 +228,13 @@ try {
   const short = sh('./target/release/zec-ecash-cli', ['pay', r5.creq, '--amount', '250']);
   check(/"partial":true/.test(short) && /received 250 of 900/.test(short), `CLI underpays 250 of 900: kept as a partial payment ("${(short.match(/"note":"([^"]+)"/) ?? [])[1]}")`);
   check(sql(`SELECT state FROM pos_quote WHERE id='${r5.id}'`) === 'UNPAID', 'the request stays unpaid');
-  await A.waitFor(`[...document.querySelectorAll('.extra')].some(e => /Partial payment received: 0\\.0000025 ZEC of 0\\.000009 ZEC/.test(e.textContent) && /in your wallet/.test(e.textContent))`, 30000);
-  check(/Waiting for payment/.test(await A.eval(txt('.status-line'))) && /Received 0\.0000025 ZEC of 0\.000009 ZEC · still unpaid/.test(await A.eval(main)), 'page: still waiting for payment, "Received 0.0000025 ZEC of 0.000009 ZEC"; the partial is collected');
+  await A.waitFor(`[...document.querySelectorAll('.extra')].some(e => /Partial payment received: 250 zats of 900 zats/.test(e.textContent) && /in your wallet/.test(e.textContent))`, 30000);
+  check(/Waiting for payment/.test(await A.eval(txt('.status-line'))) && /Received 250 zats of 900 zats · still unpaid/.test(await A.eval(main)), 'page: still waiting for payment, "Received 250 zats of 900 zats"; the partial is collected');
   check(sql(`SELECT COUNT(*) FROM pos_extra WHERE quote_id='${r5.id}' AND kind='partial' AND token IS NULL AND collected_at IS NOT NULL`) === '1', "partial collected; server's copy deleted");
   await sleep(400);
   await shot(A, 'request-partial');
   await nav(A, '/activity');
-  check(/Partial payment received.*of 0\.000009 ZEC/.test(await A.eval(main)), 'Activity: "Partial payment received", of 0.000009 ZEC');
+  check(/Partial payment received.*of 900 zats/.test(await A.eval(main)), 'Activity: "Partial payment received", of 900 zats');
   await nav(A, `/request?r=${r5.id}`);
   await A.waitFor(`document.querySelector('.extra .btn.danger-outline')`, 10000);
   await A.eval(`document.querySelector('.extra .btn.danger-outline').click(); document.querySelector('.extra .btn.primary').click()`);

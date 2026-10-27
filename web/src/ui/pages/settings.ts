@@ -74,7 +74,7 @@ export const settings: Page = {
         'section',
         { class: 'section card', 'aria-labelledby': 'set-display' },
         h('h2', { class: 'tag', id: 'set-display' }, '[ Display ]'),
-        toggle('Show zats first', '“60,000 zats” instead of “0.0006 ZEC”. 1 ZEC is 100,000,000 zats.', !!app.prefs.get().zatsFirst, (on) => app.prefs.set({ zatsFirst: on })),
+        toggle('Show zats first', '“60,000 zats” instead of “0.0006 ZEC”. 1 ZEC is 100,000,000 zats.', app.prefs.get().zatsFirst ?? true, (on) => app.prefs.set({ zatsFirst: on })),
       ),
       h(
         'section',

@@ -1,4 +1,4 @@
-// Plain words for people: amounts as ZEC first with zats underneath (or the other way round,
+// Plain words for people: amounts as zats first with ZEC underneath (or the other way round,
 // a Settings toggle), amount parsing in either unit, and wallet errors rewritten without
 // "mint", "token", "proof" and friends. No DOM, so the unit tests can run it.
 import { zatToZec } from '../wallet/onchain';
@@ -6,7 +6,7 @@ import { zatToZec } from '../wallet/onchain';
 const ZAT_PER_ZEC = 100_000_000;
 const group = new Intl.NumberFormat('en-US');
 
-let zatsFirst = false;
+let zatsFirst = true;
 export const setZatsFirst = (v: boolean) => (zatsFirst = v);
 export const isZatsFirst = () => zatsFirst;
 

@@ -85,12 +85,12 @@ try {
   await nav(A, '/request?r=nope');
   check((await A.eval('location.hash')) === '#/receive?r=nope', 'old route #/request redirects to #/receive, keeping its parameters');
 
-  // ---------- add money 0.0006 ZEC, reload mid-way ----------
+  // ---------- add money 60,000 zats, reload mid-way ----------
   await nav(A, '/');
   await tap(A, { text: /^Add money$/ });
   await shot(A, 'phone-add-money');
-  await type(A, null, '0.0006'); // the amount field has focus
-  check(/= 60,000 zats/.test(await text(A)), 'amount typed in ZEC shows zats underneath');
+  await type(A, null, '60000'); // the amount field has focus (zats by default)
+  check(/= 0\.0006 ZEC/.test(await text(A)), 'amount typed in zats (the default) shows ZEC underneath');
   await tap(A, { text: /^Get address$/ });
   await A.waitFor(`location.hash.startsWith('#/deposit?q=')`, 15000);
   const dq = decodeURIComponent(await A.eval(`location.hash.split('q=')[1]`));
@@ -99,7 +99,7 @@ try {
   check((await A.eval(`document.querySelectorAll('.toast').length`)) === 0, 'waiting for payment: no toasts on the QR screen');
   const order = await A.eval(`(() => { const all = [...document.querySelectorAll('main *')]; return ['.code-money', '.qr-card', '.pay .chip', '.status-line', 'p.hint.center'].map((s) => all.indexOf(document.querySelector(s))); })()`);
   check(order.every((v, i) => v >= 0 && (i === 0 || v > order[i - 1])), `add money order: amount, QR, address+copy, state, deadline (${order})`);
-  check(/Send exactly/.test(await text(A)) && /0\.0006 ZEC/.test(await text(A)) && /60,000 zats/.test(await text(A)), 'shows "Send exactly 0.0006 ZEC / 60,000 zats"');
+  check(/Send exactly/.test(await text(A)) && /60,000 zats/.test(await text(A)) && /0\.0006 ZEC/.test(await text(A)), 'shows "Send exactly 60,000 zats / 0.0006 ZEC"');
   const addr = await A.eval(`document.querySelector('.pay .chip').title`);
   await qrCheck(A, check, 'add money (ZIP-321)', `zcash:${addr}?amount=0.0006`);
   await shot(A, 'phone-add-money-waiting');
@@ -113,7 +113,7 @@ try {
   await waitResult(A, /Added/, 240000, mine);
   await sleep(600);
   await shot(A, 'phone-add-money-added');
-  check(/\+0\.0006 ZEC/.test(await text(A)) && !!(await A.eval(`document.querySelector('.result .nudge')`)), 'big "Added +0.0006 ZEC", with the backup reminder');
+  check(/\+60,000 zats/.test(await text(A)) && !!(await A.eval(`document.querySelector('.result .nudge')`)), 'big "Added +60,000 zats", with the backup reminder');
   check((await balance(A)) === 60000, 'A balance 60,000 zats');
   check(/Back it up so you can’t lose it/.test(await text(A)), 'Home: backup reminder after the first money arrives');
   await shot(A, 'phone-home');
@@ -122,7 +122,7 @@ try {
   await tap(A, '.tabbar a[data-path="/send"]');
   await shot(A, 'phone-send');
   await tap(A, { text: /^Show a code$/ });
-  await type(A, null, '0.0002');
+  await type(A, null, '20000');
   await tap(A, { text: /^Show code$/ });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
   const token = await A.eval(`document.querySelector('.details textarea').value`);
@@ -138,7 +138,7 @@ try {
   await pointCamera(B, { from: A });
   await tap(B, '.tabbar a[data-path="/scan"]');
   await B.waitFor(`/Money for you/.test(document.querySelector('main').textContent)`, 15000);
-  check(/\+0\.0002 ZEC/.test(await text(B)), 'Scan read A’s screen: "Money for you +0.0002 ZEC"');
+  check(/\+20,000 zats/.test(await text(B)), 'Scan read A’s screen: "Money for you +20,000 zats"');
   await shot(B, 'phone-scan-money-for-you');
   await tap(B, { text: /^Receive$/, sel: '.confirm button' });
   await waitResult(B, /Received/, 20000);
@@ -151,7 +151,7 @@ try {
   // ---------- cancel and take it back ----------
   await nav(A, '/send');
   await tap(A, { text: /^Show a code$/ });
-  await type(A, null, '0.00003');
+  await type(A, null, '3000');
   await tap(A, { text: /^Show code$/ });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
   await tap(A, { text: /^Take it back$/ });
@@ -173,7 +173,7 @@ try {
   // an unlocked code can't be checked offline: refused, in plain words
   await nav(A, '/send');
   await tap(A, { text: /^Show a code$/ });
-  await type(A, null, '0.00001');
+  await type(A, null, '1000');
   await tap(A, { text: /^Show code$/ });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
   await pointCamera(B, { from: A });
@@ -184,7 +184,7 @@ try {
   await tap(A, { text: /^Take it back$/ });
   await tap(A, { text: /^Yes, take it back$/ });
   await waitResult(A, /Taken back/, 15000);
-  // A scans B's code and sends 0.00005 ZEC locked to it
+  // A scans B's code and sends 5,000 zats locked to it
   await tap(B, '.tabbar a[data-path="/receive"]');
   await tap(B, { text: /^Receive without internet$/ });
   await pointCamera(A, { from: B });
@@ -192,7 +192,7 @@ try {
   await tap(A, { text: /^Scan their code$/ });
   await A.waitFor(`/Send to this person/.test(document.querySelector('main').textContent)`, 15000);
   check(/Only they can take this money\. You can’t take it back\./.test(await text(A)), 'scanned a receive code: "Send to this person", with the can’t-take-it-back warning');
-  await type(A, null, '0.00005');
+  await type(A, null, '5000');
   await shot(A, 'phone-send-to-person');
   await tap(A, { text: /^Send$/, sel: '.confirm button' });
   await A.waitFor(`location.hash.startsWith('#/send?t=')`, 15000);
@@ -212,29 +212,29 @@ try {
   check(/Received offline/.test(await text(B)), 'B, offline, received the locked code: "Received offline…"');
   await shot(B, 'phone-received-offline');
   await nav(B, '/');
-  check(/\+0\.00005 ZEC received offline/.test(await text(B)), 'Home: +0.00005 ZEC received offline');
+  check(/\+5,000 zats received offline/.test(await text(B)), 'Home: +5,000 zats received offline');
   await shot(B, 'phone-home-offline');
   await B.offline(false);
   await B.waitFor(`/25,000 zats/.test(document.querySelector('.money.balance')?.textContent ?? '')`, 40000);
   log('ok: back online, confirmed by itself: B balance 25,000 zats');
 
-  // ---------- A asks for 0.000015 ZEC; B pays it from the universal Scan ----------
+  // ---------- A asks for 1,500 zats; B pays it from the universal Scan ----------
   await nav(A, '/receive');
   await tap(A, { text: /^Request an amount$/ });
   await shot(A, 'phone-receive-amount');
-  await type(A, null, '0.000015');
+  await type(A, null, '1500');
   await tap(A, { text: /^Show code$/ });
   await A.waitFor(`location.hash.startsWith('#/receive?r=')`, 15000);
   await A.waitFor(`/Waiting for payment/.test(document.querySelector('.status-line')?.textContent ?? '')`, 10000);
   const creq = await A.eval(`(() => { const c = document.querySelector('.qr-card canvas'); return c && c.getAttribute('aria-label'); })()`);
-  check(/0\.000015 ZEC/.test(creq), `payment code QR: ${creq}`);
+  check(/1,500 zats/.test(creq), `payment code QR: ${creq}`);
   await shot(A, 'phone-receive-code');
   await pointCamera(B, { from: A });
   await nav(B, '/');
   await tap(B, '.tabbar a[data-path="/scan"]');
   await B.waitFor(`/Pay this code/.test(document.querySelector('main').textContent)`, 15000);
   await shot(B, 'phone-scan-pay');
-  await tap(B, { text: /^Pay 0\.000015 ZEC$/ });
+  await tap(B, { text: /^Pay 1,500 zats$/ });
   await waitResult(B, /Paid/, 20000);
   await shot(B, 'phone-paid');
   await waitResult(A, /Received/, 30000);
@@ -257,7 +257,7 @@ try {
   await nav(B, '/');
   await tap(B, '.tabbar a[data-path="/scan"]');
   await B.waitFor(`location.hash === '#/withdraw' && document.querySelector('textarea').value.startsWith('zcash:')`, 15000);
-  check((await B.eval(`document.querySelector('.amount-input').value`)) === '0.00012', 'scanned payment link: Cash out prefilled with the address and 0.00012 ZEC');
+  check((await B.eval(`document.querySelector('.amount-input').value`)) === '12000', 'scanned payment link: Cash out prefilled with the address and 12,000 zats');
   await shot(B, 'phone-cash-out');
   await tap(B, { text: /^Review$/ });
   await B.waitFor(`!document.querySelector('.review').hidden`, 15000);
@@ -273,7 +273,7 @@ try {
   await shot(B, 'phone-cash-out-sent');
   const kv = await B.eval(`[...document.querySelectorAll('.details .kv')].map((k) => k.textContent).join(' | ')`);
   log('cash out:', kv);
-  const zats = (label) => Math.round(Number(new RegExp(`${label}([\\d.]+) ZEC`).exec(kv)[1]) * 1e8);
+  const zats = (label) => Number(new RegExp(`${label}([\\d,]+) zats?`).exec(kv)[1].replace(/,/g, ''));
   const fee = zats('Network fee');
   const change = zats('Change returned');
   check(fee <= 10000 && change > 0, `fee ${fee} within the reserve, change ${change} returned`);
@@ -295,7 +295,7 @@ try {
   await shot(A, 'phone-settings', true);
   await tap(A, { text: /Show zats first/, sel: 'label.toggle' });
   await nav(A, '/');
-  check(/^36,500 zats/.test(await A.eval(`document.querySelector('.money.balance .m-main').textContent`)), 'Settings → Show zats first: Home reads 36,500 zats');
+  check(/^0\.000365 ZEC/.test(await A.eval(`document.querySelector('.money.balance .m-main').textContent`)), 'Settings → Show zats first off: Home reads 0.000365 ZEC');
   await shot(A, 'phone-home-zats-first');
   await nav(A, '/settings');
   await tap(A, { text: /Show zats first/, sel: 'label.toggle' });

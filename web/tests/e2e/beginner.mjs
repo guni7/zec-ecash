@@ -68,7 +68,7 @@ try {
 
   await task('Add money', { A }, 'Add money › amount › Get address › (pay from any Zcash wallet)', async () => {
     await tap(A, { text: /^Add money$/ });
-    await type(A, null, '0.0006');
+    await type(A, null, '60000');
     await tap(A, { text: /^Get address$/ });
     await A.waitFor(`location.hash.startsWith('#/deposit?q=')`, 15000);
     const addr = await A.eval(`document.querySelector('.pay .chip').title`);
@@ -83,7 +83,7 @@ try {
   await task('Send by showing a code', { A }, 'Send › Show a code › amount › Show code', async () => {
     await tap(A, '.tabbar a[data-path="/send"]');
     await tap(A, { text: /^Show a code$/ });
-    await type(A, null, '0.0003');
+    await type(A, null, '30000');
     await tap(A, { text: /^Show code$/ });
     await A.waitFor(`/Waiting for them/.test(document.querySelector('.status-line')?.textContent ?? '')`, 15000);
   });
@@ -106,7 +106,7 @@ try {
   await task('Request an amount and get paid', { A, B }, 'A: Receive › Request an amount › amount › Show code · B: Scan › Pay', async () => {
     await tap(A, '.tabbar a[data-path="/receive"]');
     await tap(A, { text: /^Request an amount$/ });
-    await type(A, null, '0.00002');
+    await type(A, null, '2000');
     await tap(A, { text: /^Show code$/ });
     await A.waitFor(`/Waiting for payment/.test(document.querySelector('.status-line')?.textContent ?? '')`, 15000);
     await shot(A, 'request', true);
@@ -122,7 +122,7 @@ try {
   await task('Shop mode: two customers in a row', { A, B }, 'A: Receive › Request an amount › amount › Keep open › Show code · each customer: Scan › Pay', async () => {
     await tap(A, '.tabbar a[data-path="/receive"]');
     await tap(A, { text: /^Request an amount$/ });
-    await type(A, null, '0.00001');
+    await type(A, null, '1000');
     await tap(A, { text: /Keep open for the next customer/, sel: 'label.toggle' });
     await tap(A, { text: /^Show code$/ });
     for (let n = 1; n <= 2; n++) {
@@ -161,7 +161,7 @@ try {
       check(/Ask them to open Receive → Receive without internet, then scan their code\./.test(await text(A)), 'Send without internet: the one-line instruction');
       await tap(A, { text: /^Scan their code$/ });
       await A.waitFor(`/Send to this person/.test(document.querySelector('main').textContent)`, 15000);
-      await type(A, null, '0.00004');
+      await type(A, null, '4000');
       await tap(A, { text: /^Send$/, sel: '.confirm button' });
       await A.waitFor(`/Waiting for them/.test(document.querySelector('.status-line')?.textContent ?? '')`, 15000);
     });
@@ -189,7 +189,7 @@ try {
   await task('Cash out (a payment link)', { B }, 'Scan › Review › Cash out', async () => {
     await pointCamera(B, { text: uri });
     await tap(B, '.tabbar a[data-path="/scan"]');
-    await B.waitFor(`location.hash === '#/withdraw' && document.querySelector('.amount-input').value === '0.00003'`, 15000);
+    await B.waitFor(`location.hash === '#/withdraw' && document.querySelector('.amount-input').value === '3000'`, 15000);
     await tap(B, { text: /^Review$/ });
     await tap(B, '.review .btn.confirm');
     await B.waitFor(result(/Sent/), 300000, mine);

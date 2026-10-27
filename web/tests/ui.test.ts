@@ -31,7 +31,8 @@ test('amounts: ZEC with up to 8 decimals, comma as decimal point, zats as whole 
   assert.throws(() => parseAmount('1.5', 'zats'), /whole number/);
 });
 
-test('amounts: ZEC first with zats underneath, or the reverse', () => {
+test('amounts: zats first with ZEC underneath (the default), or the reverse', () => {
+  assert.deepEqual(money(60_000), { main: '60,000 zats', sub: '0.0006 ZEC' }, 'zats first by default');
   setZatsFirst(false);
   assert.deepEqual(money(60_000), { main: '0.0006 ZEC', sub: '60,000 zats' });
   assert.deepEqual(money(1), { main: '0.00000001 ZEC', sub: '1 zat' });
@@ -41,6 +42,7 @@ test('amounts: ZEC first with zats underneath, or the reverse', () => {
 });
 
 test('plain words: wallet errors say what happened and what to do, without jargon', () => {
+  setZatsFirst(false); // the sentences below are written with ZEC amounts
   const cases: Array<[string, RegExp]> = [
     ['Already spent: this token was redeemed before.', /already used/],
     ['Mint unreachable at https://x/mint. Is the devnet running?', /Can’t reach the service/],

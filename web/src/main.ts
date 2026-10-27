@@ -57,7 +57,8 @@ const onchain = initOnchain({
   mainnet: MAINNET,
   connect: core.connect,
   proofs: core.proofs,
-  setProofs: core.setProofs,
+  changeProofs: core.changeProofs,
+  dropSpent: core.dropSpent,
   say: core.say,
   explain: core.explain,
   isNetworkError: core.isNetworkError,
@@ -218,6 +219,9 @@ async function checkMint() {
       toast(`Opened via ${location.hostname}: codes made here won't work on other devices. Open the LAN address instead.`, 'bad');
     }
     await core.connect();
+    // proofs spent elsewhere (this wallet in another tab, or an older backup restored) come out
+    const dropped = await core.dropSpent().catch(() => 0);
+    if (dropped) console.info(`dropped ${dropped} ${UNIT} of already-spent ecash`);
     onchain.setInfo(info);
     void onchain.resume(); // open deposits and withdrawals, saved across reloads
     void collectPos(); // payments to this phone's point-of-sale requests

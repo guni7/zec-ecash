@@ -885,3 +885,12 @@ select.input { appearance: auto; }
   .lines th, .lines td { padding: 8px 6px; }
   .sum-top .inv-no { align-items: flex-start; }
 }
+
+/* ---------- installing on iOS ---------- */
+.install-steps { margin: 0; padding-left: 22px; display: grid; gap: 10px; }
+.install-steps li > .btn { display: flex; width: fit-content; margin-top: 8px; }
+.install-share { display: inline-flex; vertical-align: -3px; color: var(--gold); }
+.install-share svg { width: 18px; height: 18px; }
+/* a file ready to save (iOS shares only right after a tap) */
+.save-sheet { position: fixed; left: 50%; transform: translateX(-50%); bottom: calc(var(--tabbar-h) + var(--safe-b) + 14px); z-index: 75; width: min(560px, calc(100% - 32px)); display: grid; gap: 10px; padding: 14px; border: 1px solid var(--gold); border-radius: var(--radius); background: var(--surface-2); box-shadow: 0 12px 30px -10px rgba(0, 0, 0, 0.8); }
+.save-sheet p { margin: 0; overflow-wrap: anywhere; }

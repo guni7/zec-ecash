@@ -232,6 +232,9 @@ async function checkMint() {
   }
 }
 
+// The ecash lives only in this browser's storage: ask it not to clear it under storage pressure.
+void navigator.storage?.persist?.().catch(() => false);
+
 // Offline shell (public/sw.js): lets the page open with no network, for offline receive.
 if ('serviceWorker' in navigator) {
   navigator.serviceWorker.register('/sw.js').catch((e) => console.warn('service worker:', e));

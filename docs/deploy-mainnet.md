@@ -303,10 +303,10 @@ A unit that stays `inactive` with `ConditionResult=no` is waiting for a file
 
 ### Point of sale (main host, optional)
 
-The web wallet's Receive › Show my code creates NUT-18 payment requests at the point of sale
+The web wallet's Receive › Request an amount creates NUT-18 payment requests at the point of sale
 (`crates/pos`, `zec-pos.service`): Caddy proxies `https://zecmint.duckdns.org/pos/*` to it on
-127.0.0.1:9090. Without it the page says "Payment codes are unavailable right now" and shows the
-phone's own receive key instead (the payer sends a locked code back, which works offline).
+127.0.0.1:9090. Without it the page greys out Request an amount ("Payment requests are unavailable right now")
+and points to Receive without internet (the payer sends a locked code back, which works offline).
 
 **The server never holds spendable money.** Each request is P2PK-locked to a fresh key that only
 the payee's phone holds (derived from its wallet seed, one key per request). Payers lock their

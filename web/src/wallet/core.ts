@@ -40,12 +40,13 @@ export const sumAmounts = (ps: Array<{ amount: unknown }>) => ps.reduce((a, p) =
 /** What a change to the wallet's proofs takes away (by secret) and adds. */
 export type ProofChange = { remove?: Array<{ secret: string }>; add?: Proof[] };
 
-/** Applies a change to a list of proofs; added proofs already held (same secret) are skipped. */
+/** Applies a change to a list of proofs: `remove` first, then `add` (so a proof in both stays, as
+ * a send's unused inputs do); added proofs already held (same secret) are skipped. */
 export function applyChange(current: Proof[], { remove = [], add = [] }: ProofChange): Proof[] {
   const gone = new Set(remove.map((p) => p.secret));
   const next = current.filter((p) => !gone.has(p.secret));
   const have = new Set(next.map((p) => p.secret));
-  for (const p of add) if (!gone.has(p.secret) && !have.has(p.secret)) (have.add(p.secret), next.push(p));
+  for (const p of add) if (!have.has(p.secret)) (have.add(p.secret), next.push(p));
   return next;
 }
 

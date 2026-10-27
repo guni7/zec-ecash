@@ -18,6 +18,13 @@ test('applyChange removes by secret and never adds a proof twice', () => {
   assert.deepEqual(secrets(next), ['b', 'c']);
 });
 
+test('a send keeps its unused inputs: in both remove and add, they stay', () => {
+  // cashu-ts returns the proofs it didn't swap inside `keep`, and all of them were the inputs
+  const inputs = [p('a', 8), p('b', 1024), p('c', 2048)];
+  const next = applyChange(inputs, { remove: inputs, add: [p('change', 4), p('b', 1024), p('c', 2048)] });
+  assert.deepEqual(secrets(next), ['b', 'c', 'change']);
+});
+
 test('a second tab does not bring back proofs the first tab spent', () => {
   const a = tab();
   a.changeProofs({ add: [p('x', 8), p('y', 16)] });

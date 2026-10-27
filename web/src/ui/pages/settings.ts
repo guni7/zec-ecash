@@ -87,6 +87,13 @@ export const settings: Page = {
       h(
         'section',
         { class: 'section card' },
+        h('h2', { class: 'tag' }, '[ Judging? ]'),
+        h('p', null, 'A short tour of what this wallet does, step by step.'),
+        h('a', { href: '#/judges', class: 'btn' }, 'Open the judges’ tour'),
+      ),
+      h(
+        'section',
+        { class: 'section card' },
         h('h2', { class: 'tag' }, '[ Advanced ]'),
         details(
           toggle('Compact codes', 'Codes you show for anyone to take leave out the DLEQ proofs (NUT-12): about half the size, easier to scan. Codes locked to someone, or made offline, always keep them.', app.core.settings().compact, (on) => app.core.setSettings({ compact: on })),

@@ -34,6 +34,11 @@ pub fn p2pk_key(seed: &[u8; 64]) -> Result<SecretKey> {
 /// P2PK-locked tokens always keep their DLEQ: their whole point is that the receiver can accept
 /// them offline, which needs the DLEQ proofs.
 pub async fn send(wallet: &Wallet, zat: u64, lock: Option<PublicKey>, compact: bool) -> Result<String> {
+    Ok(send_tracked(wallet, zat, lock, compact).await?.0)
+}
+
+/// [`send`], also returning the send's operation id (for [`reclaim`]: taking it back).
+pub async fn send_tracked(wallet: &Wallet, zat: u64, lock: Option<PublicKey>, compact: bool) -> Result<(String, String)> {
     let compact = compact && lock.is_none();
     // OnlineExact: swap with the mint when no exact proof set exists. Not OnlineTolerance: in
     // cdk 0.18.2 any tolerance skips the swap and is only enforced offline, so an online send
@@ -47,6 +52,7 @@ pub async fn send(wallet: &Wallet, zat: u64, lock: Option<PublicKey>, compact: b
         cdk::Error::InsufficientFunds => anyhow!("not enough ecash: balance is below {zat} zat"),
         e => anyhow!(e),
     })?;
+    let operation = prepared.operation_id();
     let mut token = prepared.confirm(None).await?;
     if compact {
         strip_dleq(&mut token);
@@ -58,7 +64,7 @@ pub async fn send(wallet: &Wallet, zat: u64, lock: Option<PublicKey>, compact: b
         proof_count(&token),
         encoded.len()
     );
-    Ok(encoded)
+    Ok((encoded, operation.to_string()))
 }
 
 /// Swaps all of the wallet's proofs for the minimal (powers-of-two) set for its balance.
@@ -116,7 +122,7 @@ pub async fn reclaim(wallet: &Wallet, id: &str) -> Result<u64> {
 /// Keysets cached in the wallet DB, collected across every mint URL in it: cdk-redb 0.18.2 only
 /// links a keyset to the URL it was first fetched under, so after a mint URL change the current
 /// URL lists none. A keyset id is a hash of its keys, so a matching id means the same mint keys.
-async fn cached_keyset_infos(wallet: &Wallet) -> Result<Vec<cdk::nuts::KeySetInfo>> {
+pub async fn cached_keyset_infos(wallet: &Wallet) -> Result<Vec<cdk::nuts::KeySetInfo>> {
     let mut infos: Vec<cdk::nuts::KeySetInfo> = vec![];
     for url in wallet.localstore.get_mints().await?.into_keys() {
         for ks in wallet.localstore.get_mint_keysets(url).await?.unwrap_or_default() {

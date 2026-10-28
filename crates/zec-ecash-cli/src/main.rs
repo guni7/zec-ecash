@@ -18,7 +18,7 @@
 //!   zec-ecash-cli withdraw <zat> <uregtest1...>   # melt ecash to a ZEC address
 //!   zec-ecash-cli reserves                     # the processor's reserve check: confirmed ZEC
 //!                                              # reserve vs. outstanding ecash + in flight
-//!   zec-ecash-cli judge-kit create <count> <zat> [--names names.txt] [--base <url>]
+//!   zec-ecash-cli judge-kit create <count> <zat> [--names names.txt] [--base <url>] [--public]
 //!   zec-ecash-cli judge-kit status|reclaim     # claim links for hackathon judges (src/judge.rs)
 //!
 //! Global flags (before the command), each also settable in the environment or `.env`:
@@ -365,7 +365,7 @@ async fn run(opts: Opts) -> Result<()> {
             "usage: zec-ecash-cli [--wallet <name>] [--mint <url>] [--mint-ca <pem>] \
              <init|deposit <zat>|mint <quote_id>|send <zat> [--lock <pubkey>] [--dleq]|receive <token>|check <token>|\
              pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance|reserves|\
-             judge-kit <create <count> <zat> [--names <file>] | status | reclaim>>"
+             judge-kit <create <count> <zat> [--names <file>] [--public] | status | reclaim>>"
         ),
     }
     Ok(())

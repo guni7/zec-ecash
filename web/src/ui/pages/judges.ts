@@ -1,11 +1,12 @@
 // The judges' tour (#/judges): short steps, each with a "Do it" link to the right screen, one
 // line on what is special about it, and a tick saved on this device. Linked from the claim
 // screen and from Settings.
-import { busy, h, svg, toast, ICON } from '../dom';
+import { busy, h, isIos, standalone, svg, toast, ICON } from '../dom';
 import { backupNudge } from '../flows';
 import { qrCard } from '../qr';
 import { go } from '../router';
 import { moneyEl, pageHead, type App, type Page } from '../widgets';
+import { moneyText } from '../words';
 
 export const REPO = 'https://github.com/guni7/zec-ecash';
 
@@ -32,6 +33,53 @@ async function leaveDemo(app: App) {
   app.prefs.set({ demoShop: false });
   app.setShopMode(false);
   go('/judges', true);
+}
+
+/**
+ * "Get test money": the next public judge link (crates/pos/src/judge.rs), one per browser, then
+ * the usual claim. Shown only while the pool has links and this browser hasn't had one.
+ */
+function testMoney(app: App): HTMLElement {
+  const box = h('section', { class: 'card stack tour-money', hidden: true, 'aria-labelledby': 'tour-money' });
+  const gotKey = app.core.key('judge-got');
+  if (localStorage.getItem(gotKey)) return box;
+  const browserKey = app.core.key('judge-browser');
+  const browser = () => {
+    let id = localStorage.getItem(browserKey);
+    if (!id) localStorage.setItem(browserKey, (id = crypto.randomUUID()));
+    return id;
+  };
+  void fetch(`${location.origin}/pos/judge/status`, { cache: 'no-store', signal: AbortSignal.timeout(6000) })
+    .then((r) => (r.ok ? (r.json() as Promise<{ left?: number; amount?: number }>) : null))
+    .then((s) => {
+      if (!s?.left || !s.amount) return;
+      const get = h('button', { type: 'button', class: 'btn primary block' }, `Get ${moneyText(s.amount)}`);
+      get.onclick = () =>
+        void busy(
+          get,
+          async () => {
+            const res = await fetch(`${location.origin}/pos/judge/claim`, {
+              method: 'POST',
+              headers: { 'content-type': 'application/json' },
+              body: JSON.stringify({ browser: browser() }),
+              signal: AbortSignal.timeout(15000),
+            });
+            const body = (await res.json().catch(() => ({}))) as { token?: string; error?: string };
+            if (!res.ok || !body.token) throw new Error(body.error ? `${body.error[0].toUpperCase()}${body.error.slice(1)}.` : `The test money service answered ${res.status}.`);
+            localStorage.setItem(gotKey, '1');
+            go(`/claim/${body.token}`); // the usual claim: welcome, money in, back to the tour
+          },
+          app.explain,
+        );
+      box.replaceChildren(
+        h('h2', { class: 'tag', id: 'tour-money' }, '[ No ZEC? ]'),
+        h('p', null, 'Get real ecash to try every step. One per browser, while they last: please take it only if you’re judging.'),
+        get,
+      );
+      box.hidden = false;
+    })
+    .catch(() => {}); // no service, or none left: no card
+  return box;
 }
 
 const STEPS: Step[] = [
@@ -72,7 +120,7 @@ const STEPS: Step[] = [
     },
   },
   { id: 'status', title: 'Check the backing', how: 'Is my money safe? compares the ZEC the mint holds on chain with all the ecash it has issued.', special: 'The reserve sits behind keys split between three keyholders: no single one can move it.', href: '#/status' },
-  { id: 'cashout', title: 'Cash out to Zcash (optional)', how: 'If you have a Zcash wallet: Cash out at least 10,000 zats to its address (scan it).', special: 'Ecash turns back into real ZEC on chain, sent to any Zcash address.', href: '#/withdraw' },
+  { id: 'cashout', title: 'Cash out to Zcash (optional)', how: 'If you have a Zcash wallet: Cash out to its address (scan it). The minimum is 10,000 zats and the network fee comes on top (at least 10,000 more), so do it from the device holding most of your money.', special: 'Ecash turns back into real, shielded ZEC on chain, sent to a unified address.', href: '#/withdraw' },
   { id: 'deposit', title: 'Have ZEC? Add money', how: 'Add money: send ZEC from any Zcash wallet to the address shown. It takes about 13 minutes; start it now and carry on.', special: 'ZEC in, ecash out, minted once the deposit has its confirmations.', href: '#/deposit' },
 ];
 
@@ -112,7 +160,8 @@ export const judges: Page = {
       'div',
       { class: 'page' },
       pageHead('Judges’ tour', { back: true }),
-      h('section', { class: 'card tour-top' }, h('span', { class: 'tag' }, '[ Your balance ]'), moneyEl(app.core.balance(), { cls: 'tour-balance' }), progress, h('p', { class: 'hint' }, 'Tick each step when you’ve done it; the ticks stay on this device.')),
+      h('section', { class: 'card tour-top' }, h('span', { class: 'tag' }, '[ Your balance ]'), moneyEl(app.core.balance(), { cls: 'tour-balance' }), progress, h('p', { class: 'hint' }, 'Tick each step when you’ve done it; the ticks stay on this device.'), isIos() && !standalone() ? h('p', { class: 'hint' }, 'On iPhone, stay in Safari for the tour: a copy added to the Home Screen starts with its own, empty wallet.') : null),
+      testMoney(app),
       backupNudge(app) ?? '',
       list,
       h(

@@ -22,6 +22,7 @@
 //!   GET  /requests/{id}/payment, POST /requests/{id}/ack, POST /requests/{id}/cancel,
 //!   GET  /keys/{pubkey}/requests (signed; src/locked.rs)
 //!   GET  /health                        -> {ok, unit, mint} (the web page's "is it up?")
+//!   GET  /judge/status, POST /judge/claim   public judge links, one per browser (src/judge.rs)
 //!
 //! A request is single-use, locked (nut10 P2PK) to `pubkey`, which is used once; the description
 //! (an invoice number, say; at most 64 characters) goes in the request itself. A payment after
@@ -42,6 +43,7 @@
 //! Both talk to the running server over <state>/pos/admin.sock (mode 600, in a mode-700
 //! directory), so the server keeps serving; with the server stopped they open the wallet directly.
 //! With the server stopped, `zec-ecash-cli --wallet pos withdraw <zat> <address>` works too.
+mod judge;
 mod locked;
 
 use std::{
@@ -160,6 +162,8 @@ struct Pos {
     pos_url: String,
     db: Mutex<Connection>,
     mainnet: bool,
+    /// The judge kit the CLI writes on this host (<state>/judge-kit/kit.json): its public links.
+    judge_kit: PathBuf,
 }
 
 type Shared = Arc<Pos>;
@@ -284,8 +288,9 @@ async fn run(cfg: Config) -> Result<()> {
          -- payer can retry: go back to UNPAID on start.
          UPDATE pos_quote SET state = 'UNPAID' WHERE state = 'PROCESSING';",
     )?;
+    conn.execute_batch(judge::SCHEMA)?;
     let mint = MintUrl::from_str(&cfg.mint_url)?;
-    let pos = Arc::new(Pos { wallet, key, mint, pos_url: cfg.pos_url.clone(), db: Mutex::new(conn), mainnet: cfg.network.is_mainnet() });
+    let pos = Arc::new(Pos { wallet, key, mint, pos_url: cfg.pos_url.clone(), db: Mutex::new(conn), mainnet: cfg.network.is_mainnet(), judge_kit: cfg.network.state_dir().join("judge-kit/kit.json") });
 
     spawn_admin(&cfg, pos.clone()).await?;
     let app = Router::new()
@@ -297,6 +302,8 @@ async fn run(cfg: Config) -> Result<()> {
         .route("/requests/{id}/ack", post(locked::ack))
         .route("/requests/{id}/cancel", post(locked::cancel))
         .route("/keys/{pubkey}/requests", get(locked::lookup))
+        .route("/judge/status", get(judge::status))
+        .route("/judge/claim", post(judge::claim))
         .with_state(pos.clone());
     let listener = tokio::net::TcpListener::bind(&cfg.listen).await.with_context(|| format!("cannot bind {}", cfg.listen))?;
     tracing::info!(listen = %cfg.listen, public = %cfg.pos_url, mint = %cfg.mint_url, pubkey = %pos.key.public_key(), "POS serving");

@@ -1,6 +1,6 @@
 //! Judge kits: claim links for hackathon judges, paid from this CLI wallet's balance.
 //!
-//!   judge-kit create <count> <zat> [--names names.txt] [--base <url>]
+//!   judge-kit create <count> <zat> [--names names.txt] [--base <url>] [--public]
 //!   judge-kit status       # per link: claimed or not (NUT-07 checkstate of its proofs)
 //!   judge-kit reclaim      # takes every unclaimed token back into this wallet
 //!
@@ -12,6 +12,9 @@
 //!   kit.csv                  name, link, amount, created
 //!   judge-NN-<name>.txt|.png|.pdf   the link; its QR code; a printable page with the tour
 //! <base> defaults to the mint URL without its /mint suffix (the web wallet's address).
+//! --public: the point-of-sale server on this host may hand these links to anyone who asks, one
+//! per browser (`POST /pos/judge/claim`, crates/pos/src/judge.rs); without it they are only
+//! ever given out by you.
 use std::{
     fs,
     io::Write,
@@ -48,13 +51,14 @@ pub async fn run(wallet: &Wallet, state_dir: &Path, mint_url: &str, args: &[&str
             let zat: u64 = zat.parse().context("<zat> must be a whole number")?;
             ensure!((1..=500).contains(&count), "<count> must be 1 to 500");
             ensure!(zat > 0, "<zat> must be more than 0");
-            let (mut names_file, mut base) = (None, None);
+            let (mut names_file, mut base, mut public) = (None, None, false);
             let mut it = rest.iter();
             while let Some(a) = it.next() {
                 match *a {
                     "--names" => names_file = Some(PathBuf::from(it.next().context("--names <file>")?)),
+                    "--public" => public = true,
                     "--base" => base = Some(it.next().context("--base <url>")?.trim_end_matches('/').to_owned()),
-                    _ => bail!("usage: judge-kit create <count> <zat> [--names names.txt] [--base <url>]"),
+                    _ => bail!("usage: judge-kit create <count> <zat> [--names names.txt] [--base <url>] [--public]"),
                 }
             }
             let base = match base {
@@ -65,11 +69,11 @@ pub async fn run(wallet: &Wallet, state_dir: &Path, mint_url: &str, args: &[&str
                 Some(f) => fs::read_to_string(&f).with_context(|| format!("cannot read {}", f.display()))?.lines().map(str::trim).filter(|l| !l.is_empty()).map(str::to_owned).collect(),
                 None => vec![],
             };
-            create(wallet, &dir, &base, count, zat, &names).await
+            create(wallet, &dir, &base, count, zat, &names, public).await
         }
         ["status"] => status(wallet, &dir).await,
         ["reclaim"] => reclaim(wallet, &dir).await,
-        _ => bail!("usage: judge-kit <create <count> <zat> [--names names.txt] [--base <url>] | status | reclaim>"),
+        _ => bail!("usage: judge-kit <create <count> <zat> [--names names.txt] [--base <url>] [--public] | status | reclaim>"),
     }
 }
 
@@ -138,7 +142,7 @@ fn write_private(path: &Path, bytes: &[u8]) -> Result<()> {
 
 // ---- create, status, reclaim ----
 
-async fn create(wallet: &Wallet, dir: &Path, base: &str, count: usize, zat: u64, names: &[String]) -> Result<()> {
+async fn create(wallet: &Wallet, dir: &Path, base: &str, count: usize, zat: u64, names: &[String], public: bool) -> Result<()> {
     let need = zat.checked_mul(count as u64).context("too much")?;
     let balance = u64::from(wallet.total_balance().await?);
     if balance < need {
@@ -150,13 +154,17 @@ async fn create(wallet: &Wallet, dir: &Path, base: &str, count: usize, zat: u64,
     for i in 0..count {
         let n = first + i as u64;
         let name = names.get(i).cloned().unwrap_or_else(|| format!("Judge {n}"));
+        // The wallet into its minimal set first, so the link holds one proof per set bit of the
+        // amount: a fragmented wallet would otherwise send an exact match of many small proofs,
+        // too long for the QR code.
+        tokens::consolidate(wallet).await?;
         // compact (no DLEQ proofs): the shortest link and QR code; the claim is online anyway
         let (token, operation) = tokens::send_tracked(wallet, zat, None, true).await?;
         let link = format!("{base}/#/claim/{token}");
         let created = now();
         let stem = format!("judge-{n:02}-{}", slug(&name));
         // saved first: the token is in the kit (and can be reclaimed) even if a file below fails
-        judges.push(json!({ "n": n, "name": name, "amount": zat, "created": created, "link": link, "token": token, "operation": operation, "files": stem }));
+        judges.push(json!({ "n": n, "name": name, "amount": zat, "created": created, "link": link, "token": token, "operation": operation, "files": stem, "public": public }));
         save(dir, &judges)?;
         let qr = qrcode::QrCode::with_error_correction_level(link.as_bytes(), qrcode::EcLevel::M).context("the link is too long for a QR code")?;
         write_private(&dir.join(format!("{stem}.txt")), format!("{link}\n").as_bytes())?;

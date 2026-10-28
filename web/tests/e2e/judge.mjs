@@ -1,8 +1,9 @@
 // Devnet test of the judge kit: `zec-ecash-cli judge-kit create 3`, one link claimed in a fresh
 // browser (a phone), every step of the tour there (a second browser as the other device; offline
 // mode for "Receive without internet"), `judge-kit status` (1 claimed), `judge-kit reclaim` (the
-// other 2 back), and an already-used link. Screenshots at 360 px: the claim screen, the tour and a
-// judge's PDF page.
+// other 2 back), an already-used link, and public links (`--public`): "Get test money" on the
+// tour, one per browser, until none are left. Screenshots at 360 px: the claim screen, the tour,
+// the test-money card and a judge's PDF page.
 //
 //   scripts/devnet-up.sh; cargo build --release -p zec-ecash-cli
 //   cd web && npm run e2e:judge          # OUT=<dir> for the screenshots
@@ -278,6 +279,35 @@ try {
     await K.waitFor(`location.hash === '#/welcome'`, 10000);
     check(true, `an already-used link (${why}): "This link has already been used…", nothing claimed`);
   }
+  // ---------- public links: "Get test money" on the tour, one per browser ----------
+  const pub = cli('judge-kit', 'create', '2', '25000', '--public');
+  check(/2 links, 50000 zat/.test(pub), 'judge-kit create 2 25000 --public');
+  const kitNow = JSON.parse(readFileSync(join(KIT, 'kit.json'), 'utf8')).judges;
+  check(kitNow.filter((j) => j.public).length === 2 && kitNow.filter((j) => !j.public).length === 3, 'kit.json marks only the 2 new links public');
+  const pubTokens = kitNow.filter((j) => j.public).map((j) => j.token);
+  const getMoney = async (name) => {
+    const P = await b.open(`${ORIGIN}/#/judges`, await b.newContext(), name);
+    await P.waitFor(`!!document.querySelector('.tour-money:not([hidden]) .btn.primary')`, 15000);
+    check(/Get 25,000 zats/.test(await text(P, '.tour-money')), `${name}: the tour offers "Get 25,000 zats"`);
+    if (name === 'pub1') await shot(P, 'tour-test-money-360', false);
+    await P.eval(`document.querySelector('.tour-money .btn.primary').click()`);
+    await P.waitFor(`/Claimed/.test(document.querySelector('.result-title')?.textContent ?? '')`, 30000);
+    await P.waitFor(`location.hash === '#/judges'`, 10000);
+    await sleep(800);
+    check((await P.eval(`document.querySelector('.tour-money')?.hidden`)) === true && (await balance(P)) === 25000, `${name}: claimed 25,000 zats; the card is gone`);
+    return P;
+  };
+  const P1 = await getMoney('pub1');
+  const again = await P1.eval(`(async () => { const k = Object.keys(localStorage).find((k) => k.includes(':judge-browser:')); const r = await fetch('/pos/judge/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ browser: localStorage.getItem(k) }) }); return r.json(); })()`);
+  check(again.again === true && pubTokens.includes(again.token), 'the same browser asking again gets the same link back (again: true)');
+  await getMoney('pub2');
+  const P3 = await b.open(`${ORIGIN}/#/judges`, await b.newContext(), 'pub3');
+  await P3.waitFor(`!!document.querySelector('.tour')`, 15000);
+  await sleep(2500);
+  const none = await P3.eval(`(async () => { const r = await fetch('/pos/judge/claim', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ browser: crypto.randomUUID() }) }); return r.status + ' ' + (await r.json()).error; })()`);
+  check((await P3.eval(`document.querySelector('.tour-money')?.hidden`)) === true && /^410 all the judge links have been claimed/.test(none), `a third browser: no card, and the server says ${none}`);
+  check(/3 claimed, 0 unclaimed, 0 being claimed, 2 reclaimed/.test(cli('judge-kit', 'status')), 'status: 3 claimed (1 sent, 2 public), 2 reclaimed');
+
   for (const p of [Jg, D]) if (p.errors.filter((e) => !/vite/.test(e)).length) log(`${p.name} console:`, p.errors.filter((e) => !/vite/.test(e)).slice(0, 5));
   log(`screenshots in ${OUT}`);
   log('ALL PASSED');

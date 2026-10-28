@@ -19,7 +19,7 @@ the reserve.
   feature, and tap **Get 25,000 zats** under "No ZEC?". It's real ecash, one per browser while
   they last. ([How the links are made](docs/judge-kit.md).) TODO(verify): deployed to mainnet,
   and the amount per link.
-- **Video:** TODO(link).
+- **Video:** https://canva.link/zec-ecash
 
 Mainnet is live with real ZEC, behind a reserve cap. It is experimental: use small amounts.
 

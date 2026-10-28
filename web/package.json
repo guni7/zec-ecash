@@ -2,6 +2,7 @@
   "name": "zec-ecash-web",
   "private": true,
   "version": "0.1.0",
+  "license": "Apache-2.0",
   "type": "module",
   "description": "zec-ecash web wallet: regtest devnet by default, MAINNET when built with ZEC_NETWORK=mainnet",
   "scripts": {
@@ -12,6 +13,7 @@
     "e2e:beginner": "node --experimental-websocket tests/e2e/beginner.mjs",
     "e2e:audit": "node --experimental-websocket tests/e2e/audit.mjs",
     "e2e:shop": "node --experimental-websocket tests/e2e/shop.mjs",
+    "e2e:judge": "node --experimental-websocket tests/e2e/judge.mjs",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

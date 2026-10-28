@@ -11,10 +11,7 @@ export const welcome: Page = {
       h('section', { class: 'welcome-card' }, h('span', { class: 'welcome-n mono', 'aria-hidden': 'true' }, `0${n}`), h('h2', null, title), h('p', null, text), extra ?? null);
     const saved = h('p', { class: 'hint t-ok', hidden: true }, 'Backup saved.');
     const backup = h('button', { type: 'button', class: 'btn block' }, 'Download backup');
-    backup.onclick = () => {
-      void downloadBackup(app);
-      saved.hidden = false;
-    };
+    backup.onclick = () => void downloadBackup(app).then((ok) => (saved.hidden = !ok));
     const start = h('button', { type: 'button', class: 'btn primary block big' }, 'Get started');
     start.onclick = () => {
       app.prefs.set({ welcomed: true });

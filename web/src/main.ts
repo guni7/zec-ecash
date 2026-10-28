@@ -19,6 +19,8 @@ import { createPosRequests } from './wallet/posreq';
 import { holdings } from './wallet/backup';
 import { h, toast } from './ui/dom';
 import { activity } from './ui/pages/activity';
+import { claim } from './ui/pages/claim';
+import { judges } from './ui/pages/judges';
 import { deposit } from './ui/pages/deposit';
 import { home } from './ui/pages/home';
 import { receive } from './ui/pages/receive';
@@ -57,7 +59,8 @@ const onchain = initOnchain({
   mainnet: MAINNET,
   connect: core.connect,
   proofs: core.proofs,
-  setProofs: core.setProofs,
+  changeProofs: core.changeProofs,
+  dropSpent: core.dropSpent,
   say: core.say,
   explain: core.explain,
   isNetworkError: core.isNetworkError,
@@ -131,6 +134,8 @@ const PAGES: Record<Path, Page> = {
   '/status': status,
   '/settings': settings,
   '/welcome': welcome,
+  '/claim': claim,
+  '/judges': judges,
   '/charge': shopPage('charge', 'Charge'),
   '/invoices': shopPage('invoices', 'Invoices'),
   '/dashboard': shopPage('dashboard', 'Dashboard'),
@@ -218,6 +223,9 @@ async function checkMint() {
       toast(`Opened via ${location.hostname}: codes made here won't work on other devices. Open the LAN address instead.`, 'bad');
     }
     await core.connect();
+    // proofs spent elsewhere (this wallet in another tab, or an older backup restored) come out
+    const dropped = await core.dropSpent().catch(() => 0);
+    if (dropped) console.info(`dropped ${dropped} ${UNIT} of already-spent ecash`);
     onchain.setInfo(info);
     void onchain.resume(); // open deposits and withdrawals, saved across reloads
     void collectPos(); // payments to this phone's point-of-sale requests
@@ -227,6 +235,12 @@ async function checkMint() {
     toast(app.explain(e), 'bad');
   }
 }
+
+// iOS Safari shows :active (the pressed look) only on pages that listen for touches.
+document.addEventListener('touchstart', () => {}, { passive: true });
+
+// The ecash lives only in this browser's storage: ask it not to clear it under storage pressure.
+void navigator.storage?.persist?.().catch(() => false);
 
 // Offline shell (public/sw.js): lets the page open with no network, for offline receive.
 if ('serviceWorker' in navigator) {

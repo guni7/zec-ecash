@@ -183,8 +183,7 @@ export function createPosRequests(core: Core) {
   }
 
   const addProofs = (extra: Proof[]) => {
-    const have = new Set(core.proofs().map((p) => p.secret));
-    core.setProofs([...core.proofs(), ...extra.filter((p) => !have.has(p.secret))]);
+    core.changeProofs({ add: extra });
   };
 
   /** Saves the prepared swap of a stored token (signed later with the request's key). */

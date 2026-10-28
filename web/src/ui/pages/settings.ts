@@ -1,6 +1,6 @@
 import { getEncodedToken } from '@cashu/cashu-ts';
 import { holdings, resetWallet, restoreBackup } from '../../wallet/backup';
-import { ago, busy, copyText, h, plural, toast } from '../dom';
+import { ago, busy, copyText, h, isIos, plural, saveFile, standalone, svg, toast, ICON } from '../dom';
 import { downloadBackup } from '../flows';
 import { go } from '../router';
 import { details, field, kv, pageHead, type App, type Page } from '../widgets';
@@ -72,11 +72,12 @@ export const settings: Page = {
         h(
           'div',
           { class: 'row wrap' },
-          h('button', { type: 'button', class: 'btn primary', onclick: () => void downloadBackup(app).then(showBackup) }, 'Download backup'),
+          h('button', { type: 'button', class: 'btn primary', onclick: () => void downloadBackup(app).then((ok) => ok && showBackup()) }, 'Download backup'),
           h('label', { for: 'restore-file', class: 'btn' }, 'Restore a backup…'),
           file,
         ),
       ),
+      isIos() && !standalone() ? installSection(app, showBackup) : '',
       h(
         'section',
         { class: 'section card', 'aria-labelledby': 'set-display' },
@@ -84,6 +85,13 @@ export const settings: Page = {
         toggle('Show zats first', '“60,000 zats” instead of “0.0006 ZEC”. 1 ZEC is 100,000,000 zats.', app.prefs.get().zatsFirst ?? true, (on) => app.prefs.set({ zatsFirst: on })),
       ),
       shopSection(app),
+      h(
+        'section',
+        { class: 'section card' },
+        h('h2', { class: 'tag' }, '[ Judging? ]'),
+        h('p', null, 'A short tour of what this wallet does, step by step.'),
+        h('a', { href: '#/judges', class: 'btn' }, 'Open the judges’ tour'),
+      ),
       h(
         'section',
         { class: 'section card' },
@@ -119,6 +127,30 @@ export const settings: Page = {
   },
 };
 
+/**
+ * iPhone/iPad in Safari: how to add the wallet to the Home Screen. The Home Screen app has its own
+ * storage, so the money moves over with a backup; and Safari may clear a site's data after 7 days
+ * without a visit, which the Home Screen app is spared.
+ */
+function installSection(app: App, onBackup: () => void) {
+  const backup = h('button', { type: 'button', class: 'btn' }, 'Download backup');
+  backup.onclick = () => void downloadBackup(app).then((ok) => ok && onBackup());
+  return h(
+    'section',
+    { class: 'section card', 'aria-labelledby': 'set-install' },
+    h('h2', { class: 'tag', id: 'set-install' }, '[ Add to Home Screen ]'),
+    h('p', null, 'Opens full screen like an app, and keeps your money safer: Safari can clear a website’s data after 7 days without a visit.'),
+    h(
+      'ol',
+      { class: 'install-steps' },
+      h('li', null, h('strong', null, 'Back up first. '), 'The Home Screen app has its own storage: the money in this Safari tab doesn’t move over by itself. ', backup),
+      h('li', null, 'Tap ', h('span', { class: 'install-share', 'aria-label': 'Share' }, svg(ICON.share)), ' Share in Safari’s toolbar, then ', h('strong', null, 'Add to Home Screen'), '.'),
+      h('li', null, 'Open ', h('strong', null, 'zec-ecash'), ' from the Home Screen, then Settings › ', h('strong', null, 'Restore a backup…'), ' and pick the file.'),
+      h('li', null, 'Back here, Settings › ', h('strong', null, 'Reset this wallet'), ', so the same money isn’t in two places: a code sent from one would show as already spent in the other.'),
+    ),
+  );
+}
+
 /** Shop mode on or off, the shop's profile and catalogue, and its data as a file. */
 function shopSection(app: App) {
   const on = !!app.prefs.get().shopMode;
@@ -135,12 +167,7 @@ function shopSection(app: App) {
   exp.onclick = () =>
     void busy(exp, async () => {
       const dump = await (await (await import('../../shop/open')).shopFor(app)).dump();
-      const blob = new Blob([JSON.stringify(dump, null, 2)], { type: 'application/json' });
-      const a = h('a', { href: URL.createObjectURL(blob), download: `zec-ecash-shop-${new Date().toISOString().slice(0, 10)}.json` });
-      document.body.append(a);
-      a.click();
-      a.remove();
-      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      await saveFile(JSON.stringify(dump, null, 2), `zec-ecash-shop-${new Date().toISOString().slice(0, 10)}.json`, 'application/json');
     }, app.explain);
   return h(
     'section',

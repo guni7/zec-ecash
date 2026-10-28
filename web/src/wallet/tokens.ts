@@ -1,7 +1,7 @@
 // Ecash tokens: receive (online, or offline for P2PK-locked tokens with DLEQ), send (optionally
 // locked to a recipient), and the sent-token ledger (pending -> received, or reclaimed). No DOM.
-import { CheckStateEnum, getEncodedToken, getTokenMetadata, type Proof } from '@cashu/cashu-ts';
-import { loadJson, reviveProofs, saveJson, sumAmounts, type Core } from './core';
+import { CheckStateEnum, MintOperationError, getEncodedToken, getTokenMetadata, type Proof } from '@cashu/cashu-ts';
+import { ALREADY_SPENT, loadJson, reviveProofs, saveJson, sumAmounts, type Core } from './core';
 import { loadPending, savePending, verifyOffline, type PendingReceipt } from './offline';
 import { checkOpen, deliver, readRequest, type RequestInfo } from './posreq';
 
@@ -57,8 +57,7 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     core.emit({ type: 'activity' });
   };
   const addProofs = (extra: Proof[]) => {
-    const have = new Set(core.proofs().map((p) => p.secret));
-    core.setProofs([...core.proofs(), ...extra.filter((p) => !have.has(p.secret))]);
+    core.changeProofs({ add: extra });
   };
 
   /** Redeems a token at the mint; with no network, accepts it offline only if verifyOffline proves it safe. */
@@ -137,6 +136,30 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     }
   }
 
+  /**
+   * The proofs to send, the change (`keep`) and the proofs they came from (`inputs`).
+   * Spent proofs (this wallet used in another tab, or restored from an older backup) are dropped
+   * first: an exact amount is sent without the mint, so one would reach the receiver already
+   * spent. If the mint still finds one spent mid-swap, they're dropped and it tries once more.
+   */
+  async function pick(amount: number, lockTo?: string, retried = false): Promise<{ send: Proof[]; keep: Proof[]; inputs: Proof[] }> {
+    if (!retried) await core.dropSpent().catch(() => 0); // best effort: the swap below finds any it missed
+    const balance = core.balance();
+    if (balance < amount) throw new Error(`Not enough ecash: balance is ${balance} ${core.unit}.`);
+    const w = await core.connect();
+    const inputs = [...core.proofs()];
+    try {
+      const { keep, send } = lockTo
+        ? await w.send(amount, inputs, undefined, { send: { type: 'p2pk', options: { pubkey: lockTo } } })
+        : await w.send(amount, inputs);
+      return { send, keep, inputs };
+    } catch (e) {
+      if (retried || !(e instanceof MintOperationError && (e.code === ALREADY_SPENT || /already spent/i.test(e.message)))) throw e;
+      await core.dropSpent();
+      return pick(amount, lockTo, true);
+    }
+  }
+
   /** Creates a token. Locked tokens always carry DLEQ proofs, so the recipient can accept them offline. */
   async function send(amount: number, opts: { compact: boolean; lockTo?: string }): Promise<SentToken> {
     if (!Number.isInteger(amount) || amount <= 0) throw new Error('Enter a whole number of zat.');
@@ -144,10 +167,7 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     if (lockTo && !/^0[23][0-9a-f]{64}$/.test(lockTo)) throw new Error("That isn't a public key (66 hex characters starting 02 or 03).");
     const balance = core.balance();
     if (balance < amount) throw new Error(`Not enough ecash: balance is ${balance} ${core.unit}.`);
-    const w = await core.connect();
-    const { keep, send: out } = lockTo
-      ? await w.send(amount, core.proofs(), undefined, { send: { type: 'p2pk', options: { pubkey: lockTo } } })
-      : await w.send(amount, core.proofs());
+    const { send: out, keep, inputs } = await pick(amount, lockTo);
     const compact = opts.compact && !lockTo;
     // Compact drops the DLEQ proofs (NUT-12): about half the size, but no offline check for the receiver.
     const token = getEncodedToken({ mint: core.mintUrl, unit: core.unit, proofs: out }, { removeDleq: compact });
@@ -155,7 +175,7 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     // The token is saved before the proofs leave the balance.
     sent = [item, ...sent];
     saveSent();
-    core.setProofs(keep);
+    core.changeProofs({ remove: inputs, add: keep });
     return item;
   }
 
@@ -166,15 +186,12 @@ export function createTokens(core: Core, extraKeys: () => string[] = () => []) {
     const balance = core.balance();
     if (balance < info.amount) throw new Error(`Not enough ecash: the request is for ${info.amount} ${core.unit}, balance is ${balance}.`);
     await checkOpen(info); // expired or cancelled: nothing leaves the wallet
-    const w = await core.connect();
-    const { keep, send: out } = info.lockTo
-      ? await w.send(info.amount, core.proofs(), undefined, { send: { type: 'p2pk', options: { pubkey: info.lockTo } } })
-      : await w.send(info.amount, core.proofs());
+    const { send: out, keep, inputs } = await pick(info.amount, info.lockTo);
     const token = getEncodedToken({ mint: core.mintUrl, unit: core.unit, proofs: out });
     const item: SentToken = { id: newId(), token, amount: info.amount, at: Date.now(), state: 'pending', lockedTo: info.lockTo, compact: false, proofs: JSON.parse(JSON.stringify(out)), request: info };
     sent = [item, ...sent];
     saveSent();
-    core.setProofs(keep);
+    core.changeProofs({ remove: inputs, add: keep });
     return { item, ...(await redeliver(item.id)) };
   }
 

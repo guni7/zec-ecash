@@ -47,8 +47,10 @@ export type Ctx = {
   mainnet: boolean;
   connect(): Promise<Wallet>;
   proofs(): Proof[];
-  /** Replaces the wallet's proofs, saves them and redraws the balance. */
-  setProofs(proofs: Proof[]): void;
+  /** Removes and adds proofs (as stored now: another tab may have changed them), saves and redraws. */
+  changeProofs(change: { remove?: Array<{ secret: string }>; add?: Proof[] }): void;
+  /** Drops proofs the mint says are already spent; returns the amount dropped. */
+  dropSpent?(): Promise<number>;
   say(text: string, kind?: 'ok' | 'bad' | ''): void;
   explain(e: unknown): string;
   isNetworkError(e: unknown): boolean;
@@ -232,7 +234,7 @@ export function initOnchain(ctx: Ctx) {
   function addProofs(extra: Proof[]): Proof[] {
     const have = new Set(ctx.proofs().map((p) => p.secret));
     const fresh = extra.filter((p) => !have.has(p.secret));
-    if (fresh.length) ctx.setProofs([...ctx.proofs(), ...fresh]);
+    if (fresh.length) ctx.changeProofs({ add: fresh });
     return fresh;
   }
 
@@ -386,6 +388,7 @@ export function initOnchain(ctx: Ctx) {
     if (ctx.mainnet && !ack) throw new Error('Tick the box to confirm you are sending real ZEC.');
     if (q.expiry && Date.now() / 1000 > q.expiry - 15) throw new Error('This quote has expired; get a new one.');
     const w = await ctx.connect();
+    await ctx.dropSpent?.().catch(() => 0); // a spent input would leave the withdrawal stuck
     // Inputs covering amount + fee reserve (+ input fees); the mint returns the rest as NUT-08 change.
     const { send: inputs } = w.selectProofsToSend(ctx.proofs(), amount + fee, true);
     if (!inputs.length) throw new Error(`Not enough ecash: need ${amount + fee} ${ctx.unit}, balance is ${sumProofs(ctx.proofs())} ${ctx.unit}.`);
@@ -403,8 +406,7 @@ export function initOnchain(ctx: Ctx) {
     // The record (holding the inputs) is saved before the inputs leave the balance.
     withdrawals = [wd, ...withdrawals];
     saveWithdrawals();
-    const gone = new Set(preview.inputs.map((p) => p.secret));
-    ctx.setProofs(ctx.proofs().filter((p) => !gone.has(p.secret)));
+    ctx.changeProofs({ remove: preview.inputs });
     quoted = null;
     emit();
     await sendMelt(w, wd);

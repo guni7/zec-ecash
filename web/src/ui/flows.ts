@@ -6,7 +6,7 @@ import { getTokenMetadata } from '@cashu/cashu-ts';
 import { makeBackup } from '../wallet/backup';
 import { CANCELLED, EXPIRED, readRequest } from '../wallet/posreq';
 import { classify, UNKNOWN_CODE } from './classify';
-import { busy, copyChip, h, svg, toast, ICON } from './dom';
+import { busy, copyChip, h, saveFile, svg, toast, ICON } from './dom';
 import { handOff } from './handoff';
 import { go } from './router';
 import { scanQr } from './scanner';
@@ -228,17 +228,18 @@ export async function receiveNow(ctx: Ctx, token: string) {
 /** Saves the backup file (everything this browser holds for the mint, the shop's data too) and remembers when. */
 export async function downloadBackup(app: App) {
   const network = app.core.mainnet ? 'mainnet' : 'regtest';
+  const before = app.prefs.get().backupAt;
   app.prefs.set({ backupAt: Date.now() }); // first, so the file says it is backed up
   const b: ReturnType<typeof makeBackup> & { shop?: unknown } = makeBackup(app.core.mintUrl, network);
   const shop = await import('../shop/open');
   if (await shop.hasShopData(app.core.mintUrl)) b.shop = await (await shop.shopFor(app)).dump();
-  const blob = new Blob([JSON.stringify(b, null, 2)], { type: 'application/json' });
-  const a = h('a', { href: URL.createObjectURL(blob), download: `zec-ecash-${network}-backup-${b.createdAt.slice(0, 10)}.json` });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+  const saved = await saveFile(JSON.stringify(b, null, 2), `zec-ecash-${network}-backup-${b.createdAt.slice(0, 10)}.json`, 'application/json');
+  if (!saved) {
+    app.prefs.set({ backupAt: before }); // cancelled: not backed up
+    return false;
+  }
   toast('Backup saved. Keep the file private: whoever has it can spend your money.', 'ok');
+  return true;
 }
 
 /** After money arrives, until there is a backup: one line and a button. */
@@ -246,10 +247,11 @@ export function backupNudge(app: App, onDone?: () => void): HTMLElement | null {
   if (app.prefs.get().backupAt) return null;
   const btn = h('button', { type: 'button', class: 'btn' }, 'Back up now');
   const el = h('div', { class: 'nudge', role: 'note' }, h('p', null, 'Your money lives only on this device. Back it up so you can’t lose it.'), btn);
-  btn.onclick = () => {
-    void downloadBackup(app);
-    el.remove();
-    onDone?.();
-  };
+  btn.onclick = () =>
+    void downloadBackup(app).then((saved) => {
+      if (!saved) return;
+      el.remove();
+      onDone?.();
+    });
   return el;
 }

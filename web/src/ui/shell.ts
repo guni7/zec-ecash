@@ -128,8 +128,8 @@ export function createShell(opts: { mainnet: boolean; mintHost: string; onPerson
       root.dataset.page = path.slice(1) || 'home';
       const shop = root.classList.contains('shop-mode');
       const under: Partial<Record<Path, Path>> = shop
-        ? { '/send': '/', '/scan': '/', '/receive': '/', '/activity': '/', '/deposit': '/', '/withdraw': '/', '/status': '/', '/welcome': '/', '/shop': '/settings' }
-        : { '/deposit': '/', '/withdraw': '/', '/status': '/', '/settings': '/', '/welcome': '/' };
+        ? { '/send': '/', '/scan': '/', '/receive': '/', '/activity': '/', '/deposit': '/', '/withdraw': '/', '/status': '/', '/welcome': '/', '/shop': '/settings', '/judges': '/settings', '/claim': '/' }
+        : { '/deposit': '/', '/withdraw': '/', '/status': '/', '/settings': '/', '/welcome': '/', '/judges': '/', '/claim': '/' };
       const current = under[path] ?? path;
       for (const a of root.querySelectorAll<HTMLAnchorElement>('[data-path]')) {
         if (a.dataset.path === path) a.setAttribute('aria-current', 'page');

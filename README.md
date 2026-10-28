@@ -1,373 +1,619 @@
-# zec-ecash
+# zec-ecash: digital cash for Zcash
 
-A Cashu ecash mint for ZEC: stock `cdk-mintd` plus our `zec-processor` over CDK's gRPC
-payment-processor API. Reserves sit in the Ironwood shielded pool; withdrawals are
-signed 2-of-3 with FROST (RedPallas). Runs on a local regtest devnet by default; mainnet
-support is experimental (see "Mainnet").
+![Network: Zcash mainnet](https://img.shields.io/badge/network-Zcash%20mainnet-F4B728)
+[![License: Apache 2.0](https://img.shields.io/badge/license-Apache%202.0-blue)](LICENSE)
 
-## Prerequisites
-- Rust stable (`rustup`), and `protoc`: `apt-get install protobuf-compiler` or `brew install protobuf`
+Instant, free, private payments in ZEC, from a phone, even when the person being paid has no
+internet. zec-ecash is a Cashu ecash mint backed by shielded ZEC, and no single key can spend
+the reserve.
 
-## Build and test
-    cargo build
-    cargo test --workspace
-    cargo clippy --workspace && cargo fmt --all
+<p align="center"><img src="docs/img/wallet-home.png" alt="The zec-ecash phone wallet: Home with the balance in zats, the reserve check and Add money / Cash out" width="300"><br><sub>The phone wallet (devnet build, test coins).</sub></p>
 
-## Run the mint (separate process; it can't live in this workspace)
-Phase 1 is ZEC deposits: a mint quote gets a fresh address of the mint's reserve wallet,
-zec-processor watches for the payment, and the mint issues ecash. Phase 2 is withdrawals: a
-melt sends ZEC from the Ironwood reserves to a shielded address. Phase 4: withdrawals are
-authorized by 2-of-3 FROST guardians; zec-processor's reserve wallet is view-only (a UFVK
-whose Orchard `ak` is the guardians' group key) and no process holds the whole spend key.
-The whole devnet (node, guardians, processor, mint) is started by `scripts/devnet-up.sh`;
-see "Local devnet" below. Then:
+## Try it now
 
-    curl -s 127.0.0.1:8085/v1/info                      # nut04 lists method "zec", unit "zat"
-    cargo run -p zec-ecash-cli -- deposit 50000         # prints an address, waits, mints
-    cargo run -p devwallet -- send <that address> 50000 && ./devnet/mine.sh 1
+- **The live wallet:** https://zecmint.duckdns.org. It runs in the browser; on a phone you can
+  add it to the Home Screen.
+- **Is my money safe?** https://zecmint.duckdns.org/#/status shows the reserve against all the
+  ecash issued, live, and whether each keyholder (guardian) is online.
+- **Judges: no ZEC needed.** Open https://zecmint.duckdns.org/#/judges, the guided tour of every
+  feature, and tap **Get 25,000 zats** under "No ZEC?". It's real ecash, one per browser while
+  they last. ([How the links are made](docs/judge-kit.md).) TODO(verify): deployed to mainnet,
+  and the amount per link.
+- **Video:** TODO(link).
 
-    cargo run -p zec-ecash-cli -- withdraw 20000 $(cargo run -q -p devwallet -- address)
-    ./devnet/mine.sh 1                                   # the CLI prints PAID and the txid
+Mainnet is live with real ZEC, behind a reserve cap. It is experimental: use small amounts.
 
-After changing `mintd/config.toml`, run `cdk-mintd -w devnet/mint config apply --file mintd/config.toml`.
-Use only `devnet/mint` as the mint's work dir: a second mint database on the same URL has
-different keysets, and wallets that used one fail against the other ("Unknown Keyset").
+## What it does
 
-zec-processor settings (environment, or `.env` in the repo root; regtest defaults shown;
-see "Mainnet" for how they change there):
+Think of a vault and banknotes. You put ZEC into the vault (the mint's shielded reserve) and get
+banknotes back (ecash). The banknotes live on your phone. You pay someone by handing them over:
+a QR code, a link or a message. Whoever holds a note can spend it or swap it back for ZEC at
+any time.
 
-    ZEC_NETWORK=regtest                       # regtest | mainnet; from the real environment only
-    ZEC_LWD_URL=http://127.0.0.1:9067         # light-wallet gRPC; https:// uses TLS (old name ZEC_LIGHTWALLETD)
-    ZEC_MINT_UFVK=devnet/keys/mint.ufvk       # view-only reserve key; startup fails if missing
-    ZEC_MINT_DB=devnet/mint-reserve.sqlite
-    ZEC_FROST_PUBKEYS=devnet/keys/frost-pubkeys.json   # startup fails if missing
-    ZEC_GUARDIANS=http://127.0.0.1:7101,http://127.0.0.1:7102,http://127.0.0.1:7103
-    ZEC_GUARDIAN_TIMEOUT_SECS=30              # per FROST round
-    ZEC_PROCESSOR_DB=devnet/processor.sqlite  # quote table zec_deposit_address
-    ZEC_GRPC_ADDR=127.0.0.1:50051
-    ZEC_MIN_CONFIRMATIONS=1                   # deposit PAID / withdrawal settled at this depth (default 1 on regtest, 10 elsewhere)
-    ZEC_MIN_ZATS=1000                         # keep equal to min_mint/max_mint in mintd/config.toml
-    ZEC_MAX_ZATS=100000000000
-    ZEC_SYNC_INTERVAL_SECS=7
-    ZEC_CDK_MINT_DB=devnet/mint/cdk-mintd.sqlite   # read-only: issued/redeemed for the reserve check
-    ZEC_STATUS_ADDR=127.0.0.1:8095            # GET /reserves, /deposit-quote, /withdrawal-quote (also proxied at https://<host>:5173/...)
-    ZEC_MAX_RESERVE=1000000                   # refuse deposit quotes that could push the reserve past this (zats)
+That gives you four things a normal shielded payment doesn't:
 
-- The processor speaks plaintext gRPC, so mintd needs `allow_insecure = true`; keep both on loopback.
-- Failed withdrawal quotes: cdk-mintd 0.18.2 reports *every* failed `zec` melt quote to the
-  wallet as "Unit unsupported" (`get_melt_custom_quote_impl` maps any backend error to
-  `UnsupportedUnit`, and cdk-payment-processor's gRPC server has already replaced our message
-  with "Could not get quote"). Stock mintd can't carry the reason, so the processor serves it:
-  `GET /withdrawal-quote?amount=<zat>&address=<ua>` answers 200 `{"ok":true,"fee":...}` or 422
-  with a `code` (`insufficient_reserve`, `invalid_address`, `amount_out_of_range`,
-  `fee_estimate_failed`) and the message. `zec-ecash-cli withdraw` asks it when a quote fails,
-  and prints e.g. "insufficient reserve: the mint can spend 275000 zat right now ..., and this
-  withdrawal needs 5020000 zat including the fee". The CLI finds both status endpoints from the
-  mint URL (override with `ZEC_STATUS_URL`).
-- Reserve invariant, checked after every sync: confirmed reserve >= outstanding ecash + withdrawals
-  in flight. `cargo run -p zec-ecash-cli -- reserves` prints the numbers (exit 1 if violated);
-  `GET /reserves` returns them as JSON (200 ok, 503 violated or not yet checked). While it is
-  violated the processor logs `RESERVE INVARIANT VIOLATED` (once a minute) and refuses new
-  deposit quotes; the mint reports that only as "Invalid payment request", so the CLI checks
-  `/reserves` and says why. The figures:
-  - confirmed reserve: shielded notes at `ZEC_MIN_CONFIRMATIONS` depth (dust included, immature
-    coinbase not), plus the mint's own change from mined withdrawals at any depth; a note that a
-    not-yet-mined withdrawal spends still counts (it is still on chain).
-  - outstanding: cdk-mintd's issued - redeemed (`keyset_amounts`, unit zat) - melt inputs still
-    PENDING.
-  - in flight: amount + fee of withdrawals whose transaction is not mined yet.
+- **Instant.** A payment settles as soon as the receiver's wallet swaps it at the mint; no
+  waiting for blocks.
+- **Free and tiny.** Moving ecash costs nothing, so a 1-zat payment makes sense.
+- **The receiver can be offline.** A phone in airplane mode can safely accept a payment locked to
+  it, and redeem it later.
+- **The issuer can't trace payments.** Notes are signed blind, so the mint can't link the ecash
+  it issued to the ecash it later sees spent.
 
-  With these, a withdrawal never trips the check: when it is broadcast its ecash moves from
-  outstanding to in flight, and when it is mined it leaves the reserve and in flight together.
-  Raising `ZEC_MIN_CONFIRMATIONS` can trip it until recent deposits are that deep (a real
-  shortfall in *confirmed* reserve).
-- Withdrawals pay only unified addresses with an Orchard receiver (they land in Ironwood);
-  transparent and Sapling-only addresses are rejected at quote time.
-- A withdrawal reports Pending from the moment its transaction is built until it is mined, and
-  Failed only if it was never broadcast or expired unmined, because the mint refunds the ecash
-  on Failed. State lives in `zec_withdrawal` in `devnet/processor.sqlite`; after a crash the
-  processor fails unbroadcast withdrawals and rebroadcasts broadcast ones.
-- Reorgs: each pass asks the node (not the wallet, which notices a reorg only once the new chain
-  is longer) which block each withdrawal's tx is in, and records its height and hash. If that
-  block is replaced and the tx is no longer mined, the record is cleared, a `REORG` warning is
-  logged, and the withdrawal stays Pending and is rebroadcast (zebrad does not put transactions
-  from a dropped block back in its mempool). It settles PAID only once the block it is in now is
-  `ZEC_MIN_CONFIRMATIONS` deep. A withdrawal already PAID stays watched for 100 blocks; if its
-  block disappears it is logged as `REORG AFTER PAID` and rebroadcast (the mint can't undo PAID,
-  so raise the depth). If such a withdrawal also passes its expiry height without being mined
-  again, it can never be mined: the processor logs `CRITICAL` with the quote id, amount and
-  address, stops watching and retrying it, and lists it on `/reserves` (state
-  `operator_action_required`, HTTP 503; `zec-ecash-cli reserves` prints it and exits 1). Pay
-  the recipient by other means, then `cargo run -p zec-processor -- resolve <quote_id>`.
-  Try reorgs on the devnet: `curl -s 127.0.0.1:18232 -d '{"method":"invalidateblock","params":["<hash>"]}'`.
-- Chain access: the processor and wallets use only the light-wallet gRPC (GetLatestBlock,
-  GetTransaction, GetBlock, SendTransaction), so a remote lightwalletd is enough. zebrad's
-  JSON-RPC is used only for regtest mining (`devnet/mine.sh`) and the reorg test above;
-  `devnet-up.sh` reads the tip with `devwallet tip`.
-- zec-processor builds the Orchard proving key at startup (about 30 s in a debug build).
-- Signing: `make_payment` builds the PCZT and returns Pending; FROST signing runs in the
-  background (the mint locks the quote during `make_payment`, and guardians read the quote
-  from the mint before signing). Fewer than 2 guardians, or a refusal, means FAILED with
-  nothing broadcast, and the mint refunds.
-- Each guardian re-checks the withdrawal itself before signing: the mint says the melt is
-  PENDING; exactly one output pays the quoted amount to the quoted address; all other value
-  returns to the mint; every spend is the mint's; the fee fits the reserve; and it never signs
-  two different transactions for one quote.
+What you can do in the wallet:
 
-## Ecash wallets: CLI and web page (Phase 3)
-Both are demo wallets for this regtest devnet. Don't use real funds.
+- **Add money:** send ZEC from a Zcash wallet to a one-time address; ecash appears once the
+  deposit is confirmed.
+- **Send and Receive:** show a code, scan a code, or paste one.
+- **Receive without internet:** show your receive code; the sender locks the payment to you.
+- **Request an amount:** a payment request (Cashu NUT-18) the payer scans and pays.
+- **Shop mode:** a counter terminal, invoices and receipts (signed links and PDFs), CSV exports
+  and a sales dashboard. Shop data stays on the device.
+- **Cash out:** turn ecash back into ZEC, sent to a Zcash unified address with an Orchard
+  receiver.
+- **Status:** the live reserve check and the guardians, in plain words.
 
-    cargo run -p zec-ecash-cli -- init                     # once per wallet (seed in devnet/keys/)
-    cargo run -p zec-ecash-cli -- --wallet bob init        # a second wallet, "bob"
-    cargo run -p zec-ecash-cli -- send 5000                # cashuB token + terminal QR
-    cargo run -p zec-ecash-cli -- --wallet bob receive <token>
-    cargo run -p zec-ecash-cli -- --wallet bob pubkey      # P2PK key (derived from the seed)
-    cargo run -p zec-ecash-cli -- send 5000 --lock <bob's pubkey>   # only bob can redeem it
-    cargo run -p zec-ecash-cli -- send 3000 --dleq        # keep DLEQ proofs (default is compact)
-    cargo run -p zec-ecash-cli -- --wallet bob check <token>   # offline: verify every proof's DLEQ
-    cargo run -p zec-ecash-cli -- pay <creqA...>          # pay a NUT-18 request (point of sale)
-    cargo run -p zec-ecash-cli -- consolidate             # swap all proofs into the minimal set
-    cargo run -p zec-ecash-cli -- pending                 # your tokens nobody redeemed yet
-    cargo run -p zec-ecash-cli -- reclaim <id>            # take one back (voids that token)
+## Why it matters
 
-Wallets keep the minimal set of proofs (powers of two) for every mint, swap, send and receive,
-so a token holds one proof per set bit of its amount: 3000 zat = 7 proofs, about 1,160
-characters compact (the default) or 2,170 with DLEQ proofs (`--dleq`). The web page does the
-same; its "Compact token" box is on by default. P2PK-locked sends (`--lock`) always include
-DLEQ proofs, because the receiver needs them to accept the token offline.
+Shielded Zcash is private, but it isn't made for small, everyday payments:
 
-**Safe offline receive.** Without the mint a receiver can't know a token is unspent, unless
-nobody else *can* spend it. So a token is accepted offline only if every proof is P2PK-locked to
-the receiver's key (no refund/locktime/multisig escape hatch) and every proof's DLEQ proof checks
-out against mint keys cached while online. `check <token>` does this in the CLI; the web page
-shows its own key as a QR (Receive › Receive without internet), and when it
-scans a token with no network it runs the same checks, shows "Received offline", and redeems the token
-automatically (signing with its key) once the mint is reachable. Compact tokens and unlocked
-tokens are refused offline, with the reason.
+- **It's slow.** A payment is safe after confirmations. This mint waits for 10, about 12.5
+  minutes at 75 seconds per block.
+- **It always costs a fee.** ZIP 317 charges 5,000 zats per action, at least 10,000 zats per
+  transaction. That's more than a coffee-sized payment should cost.
+- **The receiver can't check a payment offline.** Their wallet has to sync the chain to see it
+  arrive.
 
-**Point of sale (NUT-18), locked to the payee's phone.** `crates/pos` (port of
-thesimplekid/cashu-payment-backend, see its header for the fixes) runs on 127.0.0.1:8090,
-proxied as `https://<host>:5173/pos`; `devnet-up.sh` starts it. The page's Receive › Request an amount asks it
-for a request locked to a fresh P2PK key derived from the phone's wallet seed (one key per
-request, never reused). The payer's wallet (`zec-ecash-cli pay <creqA>`, or the page: scan the
-code, then Pay) locks every proof to exactly that key, with DLEQ proofs and no locktime or refund
-keys. The server checks the payment without claiming anything (mint, unit, the exact lock,
-DLEQ, NUT-07 unspent, no proof accepted twice), stores it and marks the request PAID. It never
-refuses a payment only the payee can spend: one that loses a race or arrives after PAID is kept
-as an extra payment, and one short of the request (on time or late) as a partial payment, which
-leaves the request unpaid ("received X of Y"). The phone collects both kinds too and offers a
-Refund button (an unlocked token, or one locked to a key the payer gives). Only payments failing
-those safety checks are refused. The phone then collects it: a fetch signed with the request's key, a swap at
-the mint signed with the same key, the proofs saved, and a signed ack after which the server
-deletes its copy. It collects automatically whenever the app is open, after a reload or after
-being offline; a wallet restored from its seed finds its requests by re-deriving the keys.
-Tests: `web/tests/e2e/pos-api.mjs` and `pos-page.mjs`. The server's own wallet
-(`--wallet pos`, `pos sweep`) is legacy: only requests created before this kept money there,
-and on mainnet nothing new lands in it. Start with `source scripts/env.sh` so the CLI uses the
-same mint URL as the phone.
+Ecash on top of shielded ZEC keeps the privacy and adds speed, zero fees and offline receiving.
+Only deposits and cash-outs touch the chain.
 
-`--wallet <name>` (default `ecash`) uses `devnet/keys/<name>-wallet.seed` and
-`devnet/<name>-wallet.redb`. The mint URL comes from `ZEC_MINT_URL` (or `--mint`), and the
-CA for an HTTPS mint URL from `ZEC_MINT_CA` (or `--mint-ca`), both read from `.env` too.
+And unlike a typical ecash mint, **no single key can spend the reserve.** It is held by a 2-of-3
+threshold key (FROST): three keyholders (guardians) each hold one share, and each checks every
+withdrawal against the mint's own record before signing. Today one operator runs all three
+guardians ([limits](#limitations-and-roadmap)).
 
-### Web wallet on a phone
-An HTTPS page can't call the plain-HTTP mint, and a phone can't reach 127.0.0.1, so the Vite
-dev server serves the page over HTTPS on every interface and proxies `/mint/*` to the mint.
-The mint URL every wallet uses, and every token carries, is `https://<host>:5173/mint`. Use a
-stable hostname for `<host>`: this Mac's mDNS name doesn't change when the network or IP does.
+## How it works
 
-1. One-time setup (needs Node >= 20 and `brew install mkcert`):
+### Architecture
 
-       (cd web && npm ci)
-       scripts/set-mint-host.sh --init     # first time only: adopt mkcert's root as web/certs/rootCA.pem
+**Point: a stock Cashu mint does the ecash; our processor does the Zcash side; three guardians
+hold the reserve's key between them.**
 
-2. Point everything at the hostname. Run this **before minting the ecash you'll demo**:
+```mermaid
+flowchart TB
+  W["Web wallet<br/>(phone browser)"]
+  subgraph main["Main host"]
+    C[Caddy]
+    M["cdk-mintd 0.18.2<br/>(stock Cashu mint)"]
+    S["POS server"]
+    P["zec-processor<br/>(view-only reserve wallet)"]
+  end
+  subgraph guardians["Guardians: any 2 of 3 sign"]
+    G1["Guardian 1<br/>(main host)"]
+    G2["Guardian 2<br/>(second server)"]
+    G3["Guardian 3<br/>(laptop, SSH tunnel)"]
+  end
+  L["Light-wallet server<br/>(zec.rocks, third party)"]
+  Z[("Zcash mainnet<br/>(Ironwood pool)")]
+  W -->|HTTPS| C
+  C -->|/mint| M
+  C -->|/pos| S
+  C -->|/reserves| P
+  M <-->|"gRPC (MintPayment)"| P
+  P -->|"FROST rounds (TLS + HMAC)"| guardians
+  P -->|gRPC| L
+  L --> Z
+```
 
-       scripts/set-mint-host.sh            # default: $(scutil --get LocalHostName).local
-
-   It reissues the web server's leaf certificate (for the hostname, localhost, 127.0.0.1 and
-   the current LAN IP), sets `ZEC_MINT_URL` in `.env`, sets `[info] url` in
-   `mintd/config.toml` and applies it, then restarts the mint and the web server. It prints the
-   old and new mint URLs. Ecash minted under the old URL counts as a different mint from then
-   on; it is still redeemable with `zec-ecash-cli --mint <old url> ...`.
-   If the network blocks mDNS (the phone can't open the `.local` name), use the IP instead:
-   `scripts/set-mint-host.sh 192.168.1.22`. Then you must re-run it whenever the IP changes.
-3. Trust the root CA on the phone, once. Send it `web/certs/rootCA.pem` (AirDrop or email;
-   **only rootCA.pem, never rootCA-key.pem**, which stays in `mkcert -CAROOT`).
-   - iPhone: open the file, Settings > General > VPN & Device Management > install the profile,
-     then Settings > General > About > Certificate Trust Settings > turn on full trust for it.
-   - Android: Settings > Security > Encryption & credentials > Install a certificate > CA certificate.
-   `set-mint-host.sh` only reissues the leaf certificate from that same root, and refuses to run
-   if mkcert's root doesn't match `web/certs/rootCA.pem`. So the root installed on the phone stays
-   valid across hostname and IP changes.
-4. In each terminal you use for the CLI, run `source scripts/env.sh`.
-5. On the phone, open `https://<LocalHostName>.local:5173`. The green dot means
-   `/mint/v1/info` loaded; "Scan QR" asks for the camera (it only works over HTTPS).
-   `scripts/devnet-up.sh status` checks that the web URL reaches the mint.
-
-The CLI trusts the root through `ZEC_MINT_CA=web/certs/rootCA.pem` (CDK's HTTP client loads it
-via `SSL_CERT_FILE`, plus the OS store), so `mkcert -install` on the Mac is optional.
-`web/smoke.mjs` runs the page's cashu-ts calls from Node, for a check without a phone.
-
-## Privacy and trust
-
-- **Ecash.** The mint signs blinded messages, so it can't link a deposit to the ecash later
-  spent, sent or withdrawn. It does see amounts, timing and each withdrawal's address.
-- **Reserve.** The mint holds the ZEC; a withdrawal needs 2 of 3 FROST guardians, each of which
-  re-checks it against the mint's public quote. `/reserves` and the Status page show the reserve
-  against outstanding ecash, live; withdrawal addresses are never published there.
-- **Point of sale.** The POS server never holds spendable funds: every payment is P2PK-locked to
-  a key only the payee's phone holds, and the server only checks and stores it until the phone
-  collects it. It learns amounts and timing. A compromised POS server can withhold or delete
-  payments (the payer's ecash is then stuck, locked to the payee's key), but it can't steal them.
-  Each request uses a fresh key, so the mint can't link one shop's payments when they are
-  redeemed.
-- **This browser.** Ecash, keys and the wallet seed live only in this browser's storage; anyone
-  with the device or a backup file can spend them.
-
-## Why the mint is a separate process
-`cdk-sqlite` / `cdk-axum` and the Zcash crates conflict (`libsqlite3-sys`, `sha2`),
-so they can't share one Cargo resolve. The wallet CLI uses `cdk-redb` for the same reason.
-
-## Mainnet (experimental; real ZEC)
-
-**Deploying: [docs/deploy-mainnet.md](docs/deploy-mainnet.md)** (machines, firewall, the DKG
-ceremony across three machines, guardian TLS and auth, Caddy, start-up, checks before the first
-transaction).
-
-`ZEC_NETWORK=mainnet` switches every binary to Zcash mainnet. Only the network parameters and
-the defaults below differ; every code path is the same as on regtest, which stays the default.
-`ZEC_NETWORK` is read from the real environment only, never from a `.env` file.
-
-| | regtest | MAINNET |
+| Component | What it does | Runs on |
 |---|---|---|
-| state (keys, DBs, mint work dir, logs) | `devnet/` | `mainnet/` (gitignored) |
-| settings file | `.env` + shell | `mainnet/.env` only (never `.env` or the shell, which may hold the devnet's) |
-| light-wallet server (`ZEC_LWD_URL`) | `http://127.0.0.1:9067` (Zebra) | `https://zec.rocks:443` (TLS, webpki roots) |
-| `ZEC_MIN_CONFIRMATIONS` | 1 | 10 |
-| new wallet / UFVK birthday | block 2 | chain tip - 100 (stored in the wallet DB) |
-| ports: mintd, processor gRPC, status, guardians, POS | 8085, 50051, 8095, 7101-3, 8090 | +1000: 9085, 51051, 9095, 8101-3, 9090 |
-| mintd config | `mintd/config.toml` | `mintd/config.mainnet.toml` (min deposit/withdrawal 10,000 zat: smaller notes are dust) |
-| guardian transport | plain HTTP on loopback (TLS/auth only if configured) | TLS (`scripts/guardian-ca.sh`) and HMAC-authenticated rounds (`guardian make-auth-key`), both required |
-| start | `scripts/devnet-up.sh` | systemd units in `deploy/systemd/` (`zec-processor`, `zec-mintd`, `zec-guardian@N`; env from `deploy/mainnet.env.example` / `deploy/guardian.env.example`), or `scripts/mainnet-up.sh`; `scripts/server-check.sh` on every box |
-| web wallet | Vite dev server, port 5173 | MAINNET badge; disabled unless opened at `ZEC_MINT_URL`; built and served by Caddy (`deploy/Caddyfile.example`) |
-| keys | `scripts/devnet-reset.sh --new-keys` (runs `scripts/devnet-dkg.sh`) | distributed ceremony, one guardian per machine (`docs/deploy-mainnet.md`) |
+| Web wallet (`web/`) | Holds the ecash in the browser; all wallet features; installable on a phone | the user's device |
+| Caddy | HTTPS, serves the web wallet, routes `/mint`, `/pos` and the status paths | main host |
+| cdk-mintd 0.18.2 | The stock Cashu mint: issues, swaps and redeems ecash; unchanged | main host |
+| zec-processor (`crates/zec-processor`) | The Zcash side: deposit addresses, confirmations, building and broadcasting cash-outs, the reserve check | main host |
+| Guardians (`crates/guardian`) | Each holds one FROST key share; re-checks a cash-out, then signs | guardian 1: main host; guardian 2: a second server; guardian 3: a laptop, reached over an SSH tunnel |
+| POS server (`crates/pos`) | Holds payment requests and the payments made to them, which only the payee can spend | main host |
+| Light-wallet server | Chain data and broadcasting (a third-party server, zec.rocks) | third party |
 
-- Chain access is only the light-wallet gRPC (GetLatestBlock, GetTransaction, GetBlock,
-  SendTransaction, GetTreeState), so no local node is needed.
-- Labels: on mainnet every log line starts with `MAINNET`, every binary prints a
-  `*** MAINNET (real ZEC) ***` banner, and `devwallet send` / `zec-ecash-cli withdraw` refuse
-  unless given `--confirm-mainnet`.
-- Keys come from a distributed DKG: each guardian runs
-  `guardian dkg --id N --threshold 2 --participants 3` on its own machine (again after each
-  delivery), the operator carries the round-1 files to everyone and each round-2 file only to its
-  recipient, the processor host makes `mint.ufvk` from `frost-pubkeys.json`, and
-  `guardian verify` checks all three machines agree. Each guardian writes only its own key share
-  (mode 600) and the public key package. `scripts/devnet-dkg.sh` runs the same ceremony on one
-  machine for the devnet only and refuses `ZEC_NETWORK=mainnet`.
-- Guardian transport: a guardian's `/round1` and `/round2` take only requests carrying an
-  HMAC-SHA256 (per-guardian secret shared with the processor only) over method, path, timestamp and
-  body, within 60 s and never replayed; the check runs before any nonce is made. On mainnet the
-  guardian serves TLS with a certificate from the operator's private CA (the processor trusts it as
-  `ZEC_GUARDIAN_CA`) and checks quotes at the mint's public `https://` URL.
-- The reserve cap (`ZEC_MAX_RESERVE`, default 1,000,000 zat) refuses deposit quotes that could
-  push the reserve past it, counting open quotes; `GET /deposit-quote?amount=` says why.
-- Devnet scripts pin `ZEC_NETWORK=regtest` and stop processes by their devnet ports, so they
-  never stop a mainnet process; `devnet-reset.sh` never touches `mainnet/`.
-- Seeds and keys are still never generated implicitly; seed files are created mode 600.
+### Deposit
 
-Dry check (moves nothing):
+**Point: ZEC goes to a one-time address of the reserve; once it is confirmed, the wallet mints
+the same amount of ecash.**
 
-    ZEC_NETWORK=mainnet cargo run -p devwallet -- info     # server, tip, branch; Ironwood active?
-    ZEC_NETWORK=mainnet cargo run -p devwallet -- --seed mainnet/keys/dry-check-wallet.seed new
-    ZEC_NETWORK=mainnet cargo run -p devwallet -- --seed mainnet/keys/dry-check-wallet.seed sync
+1. The wallet asks for a deposit quote (Cashu NUT-04, with the custom method `zec`, unit `zat`).
+   The quote is locked to a key that only this wallet holds (NUT-20), so nobody else can mint
+   with it.
+2. The processor gives the quote a fresh diversified address of the reserve wallet. The wallet
+   shows it as a QR code with the amount (a ZIP-321 `zcash:` link).
+3. The processor syncs the view-only reserve wallet and credits each arriving note to its quote
+   by the address's diversifier index.
+4. At 10 confirmations (mainnet; 1 on the devnet) the processor tells the mint the quote is paid.
+5. The wallet sends blinded messages, signed with its quote key (NUT-20), and gets back blind
+   signatures: its new ecash.
 
-`mainnet/.env` holds `CDK_MINTD_MNEMONIC` (the mainnet mint's own, never the devnet's),
-`ZEC_MINT_URL`, `ZEC_MINT_CA` (if needed), and any `ZEC_*` overrides.
+```mermaid
+sequenceDiagram
+  participant W as Wallet
+  participant M as cdk-mintd
+  participant P as zec-processor
+  participant Z as Zcash
+  W->>M: deposit quote (amount, quote key)
+  M->>P: new quote
+  P-->>M: one-time address
+  M-->>W: quote with the address (shown as a zcash: QR)
+  Note over W,Z: the user pays from a Zcash wallet
+  Z-->>P: note arrives at that address
+  P->>P: wait for 10 confirmations
+  P->>M: quote paid
+  W->>M: blinded messages, signed with the quote key
+  M-->>W: blind signatures = ecash
+```
 
-## Version notes
-- `orchard` is pinned to `=0.15.5`; 0.16 conflicts with `zcash_primitives` 0.30.
-- Enabling `pczt` on `zcash_client_backend` turns on transparent inputs, so
-  `zcash_client_sqlite` needs `transparent-inputs` too.
-- Ironwood support is behind the `orchard` feature; there is no `ironwood` feature.
+**Restart safety.**
+- **Processor:** quotes live in its database, and a paid event carries a fixed id per quote, so
+  the mint records it once even if it arrives twice.
+- **Web wallet:** it saves the outputs and their NUT-20 signature before sending them. If the
+  answer is lost, a reload asks the mint to restore the signatures (NUT-09) instead of minting
+  twice.
+- **Progress bar:** `GET /deposit-quote?quote=<id>` reports confirmations so far and needed.
 
-## Local devnet (regtest)
-Zebra 6.4.2 serves the light-wallet gRPC protocol itself, so no lightwalletd or Zaino is needed.
-Prerequisites: `cargo install zebrad --version 6.4.2 --locked`, `cargo install cdk-mintd --locked`,
-and `CDK_MINTD_MNEMONIC="<24 words>"` in `.env` (the mint's only mnemonic source).
+### Transfers
 
-### Keys: `devnet/keys/` (gitignored, survives every reset)
+**Point: ecash is a set of mint-signed secrets. Paying means handing them over; the receiver
+swaps them for new ones so the sender can't spend them again.**
 
-| File | What |
+**Blind signatures, by analogy.** You put a note in an envelope lined with carbon paper. The
+mint signs the outside without opening it, and the signature goes through onto the note. Later
+the mint recognises its own signature, but it never saw the note, so it can't tell when it
+signed it.
+
+> **The maths (Cashu NUT-00, blind Diffie-Hellman key exchange).** The mint has a private key
+> `k` and public key `K = kG` for each amount. The wallet picks a secret `x` and maps it to a
+> curve point `Y = hash_to_curve(x)`.
+> - The wallet blinds it with a random `r`: `B' = Y + rG`.
+> - The mint signs: `C' = kB'`.
+> - The wallet unblinds: `C = C' − rK = kY`.
+> - Later anyone presents `(x, C)`, and the mint checks `C = k·hash_to_curve(x)`.
+>
+> The mint saw only `B'`, which looks random, so it can't link `C` back to the signing.
+
+- **The swap (NUT-03).** The receiver hands the mint the proofs it received and gets fresh
+  ones. The mint records each spent proof by `Y` in its spent list, so a proof works once.
+- **Checking a proof (NUT-07).** Anyone can ask the mint whether a proof is unspent, pending or
+  spent, by `Y`.
+- **Offline signature check (NUT-12, DLEQ).** A short proof that `C` was made with the same `k`
+  as the mint's public key, so a wallet can check a signature without asking the mint.
+- **Denominations.** Proofs come in powers of two (1, 2, 4, … zats). A swap makes the minimal
+  set, one proof per set bit of the amount. If the wallet already holds proofs adding up to
+  exactly the amount, it sends those as they are, without asking the mint.
+- **Compact and full tokens.** A token (`cashuB…`) can leave out the DLEQ proofs: about half the
+  size, but the receiver can't check it offline. Codes you show for anyone to take are compact
+  by default; codes locked to someone always keep them. On the devnet a 3,000-zat token of 7
+  proofs is 1,162 characters compact and 2,170 with DLEQ proofs.
+
+```mermaid
+sequenceDiagram
+  participant A as Sender's wallet
+  participant B as Receiver's wallet
+  participant M as cdk-mintd
+  A->>A: pick proofs worth the amount (a swap at the mint makes change if needed)
+  A->>B: token (QR, link or paste)
+  B->>M: swap: these proofs for new blinded messages
+  M->>M: each Y unspent? mark it spent
+  M-->>B: blind signatures = new proofs
+  Note over A,B: the sender's copy is now worthless
+```
+
+### Cash out
+
+**Point: the processor builds the transaction from a view-only wallet, two of three guardians
+each check it against the mint and sign their share, and the mint only refunds if nothing can
+reach the chain.**
+
+1. **Quote (NUT-05).** The wallet asks to melt ecash to an address. The processor accepts only
+   a unified address with an Orchard receiver, which pays into Ironwood. It prices the fee with
+   a ZIP 317 proposal, and the mint returns a quote with a fee reserve.
+2. **Melt.** The wallet sends proofs covering amount + fee reserve, plus blank outputs for
+   change (NUT-08). The mint marks the quote PENDING and asks the processor to pay.
+3. **Build.** The processor builds a partially created transaction (a PCZT) from the view-only
+   reserve wallet. It never holds a spend key.
+4. **Check.** Each guardian fetches the quote from the mint itself
+   (`GET /v1/melt/quote/zec/{id}`) and re-derives everything from the PCZT. It signs only if all
+   of these hold (`crates/guardian/src/policy.rs`):
+   - **(a)** the mint says the melt is PENDING, in unit `zat`;
+   - **(b)** exactly one output pays exactly the quoted amount to the quoted address;
+   - **(c)** every other output with value goes back to the mint, and the transaction touches
+     no transparent or Sapling funds;
+   - **(d)** every spend is one of the mint's own notes (`verify_rk` / `verify_nullifier`
+     against the mint's key);
+   - **(e)** the fee is at most the quote's fee reserve;
+   - **(f)** Ironwood's cross-address restriction holds;
+   - **(g)** each message it is asked to sign is this PCZT's own sighash;
+   - **(h)** it has never signed a different transaction for this quote.
+5. **Sign (FROST over RedPallas).**
+   - **Round 1:** each guardian commits to fresh nonces.
+   - **Round 2:** each guardian that passed the checks returns a signature share.
+   - **Aggregate:** the processor combines two shares into one ordinary RedPallas signature.
+   - **Re-randomised:** each Orchard spend is signed under `rk = ak + [α]G`, so the signing is
+     re-randomised with that spend's `α`.
+   - **Transport:** the rounds go over TLS, and each request carries an HMAC.
+6. **Broadcast.** The processor proves and extracts the transaction. It saves the txid, then
+   broadcasts.
+7. **Settle.** The melt stays Pending until the transaction is 10 blocks deep, then it is PAID.
+   - **Change:** the mint's 0.18.2 quote response leaves out the change signatures. The wallet
+     recovers them by restoring its blank outputs (NUT-09).
+
+```mermaid
+sequenceDiagram
+  participant W as Wallet
+  participant M as cdk-mintd
+  participant P as zec-processor
+  participant G as Guardians (2 of 3)
+  participant Z as Zcash
+  W->>M: melt quote (amount, address)
+  M-->>W: quote + fee reserve
+  W->>M: proofs + blank change outputs
+  M->>P: pay (quote PENDING)
+  P->>P: build PCZT (view-only)
+  P->>G: round 1: commitments
+  G->>M: fetch the quote, run checks a-h
+  P->>G: round 2: signing package
+  G-->>P: signature shares
+  P->>Z: aggregate, prove, broadcast
+  Z-->>P: mined, 10 blocks deep
+  P->>M: paid (txid)
+  M-->>W: PAID, change via NUT-09 restore
+```
+
+**Failures, crashes and reorgs** ([details](docs/processor.md#withdrawals)):
+- **Refund rule.** The mint refunds the ecash when a melt fails. So a cash-out reports Failed
+  only if nothing was broadcast, or the chain passed the transaction's expiry height and it
+  wasn't mined. From the moment a PCZT is built until it is mined, it reports Pending.
+- **Crash.** On restart, unbroadcast withdrawals fail (the mint refunds) and broadcast ones are
+  sent again.
+- **Reorg.** If the block holding a withdrawal is replaced, the withdrawal goes back to Pending
+  and is rebroadcast. It settles only when its new block is deep enough.
+- **Reorg after PAID.** A paid withdrawal stays watched for 100 blocks. If it is reorged out and
+  then expires unmined, the processor flags it for the operator (`/reserves` shows it, with
+  HTTP 503).
+
+### Receive without internet
+
+**Point: a receiver can't ask the mint whether a token is unspent, so it accepts one offline
+only if nobody else could spend it.**
+
+The sender locks the payment to the receiver's public key (Cashu NUT-11, P2PK; NUT-10 spending
+conditions). Offline, the receiving wallet checks every proof in the token
+(`web/src/wallet/offline.ts`). Any failure means "only accept it online":
+
+- **The lock:** the proof is locked to this wallet's key, with no locktime, refund keys or
+  other ways out.
+- **The mint:** the token names this wallet's mint and unit.
+- **The signature:** a valid DLEQ proof (NUT-12) against the mint keys this device saved while
+  online.
+
+Accepted tokens are queued and redeemed automatically, signing with the wallet's key, once the
+mint is reachable.
+
+**Why the sender needs a moment online:** locking is part of the signed secret, so locked proofs
+have to be made by a swap at the mint. The receiver can stay offline the whole time.
+
+### Payment requests and shop mode
+
+**Point: the payee's phone creates each request with a fresh key; the payer locks the payment
+to that key; the server stores it but can't spend it.**
+
+- **Requests.** Receive › Request an amount asks the POS server (`crates/pos`) for a payment
+  request (NUT-18).
+  - **The key:** the request carries a NUT-10 lock to a fresh public key, derived from the
+    wallet seed with one index per request (`web/src/wallet/posreq.ts`) and never reused.
+  - **Restore:** a wallet restored from its seed finds its requests again by re-deriving the
+    keys.
+- **Paying.** The payer's wallet locks every proof to exactly that key, with DLEQ proofs and no
+  locktime or refund keys, and posts it to the request's address.
+- **What the server checks, without claiming anything:**
+  - the mint and the unit;
+  - the exact lock, with no locktime, refund or extra keys;
+  - a DLEQ proof on every proof;
+  - every proof unspent (NUT-07);
+  - no proof accepted twice (by `Y`).
+  A payment that fails any check is refused.
+- **Collecting.** The phone fetches the payment with a request signed by the request key
+  (BIP-340 Schnorr, within 60 s). It swaps the proofs at the mint, signing with the same key,
+  then sends a signed acknowledgement, and the server deletes its copy.
+- **Nothing is lost.** A valid payment can't be refused without stranding it, so the server
+  keeps every one the payee should know about:
+  - **Extra:** it lost a race, or arrived after the request was paid.
+  - **Partial:** it was short; the request stays unpaid.
+  - **Late:** it arrived after the request expired or was cancelled. It doesn't pay the
+    request, and it's kept for a refund.
+  The payee collects all of them and can refund them.
+- **Expiry and cancel.** A request can carry an expiry; the payee can cancel it with a signed
+  request. The web wallet checks `/check/<id>` before paying and won't pay a closed request.
+- **Shop mode.**
+  - **Counter and invoices:** a counter terminal and invoices, both built on these requests.
+  - **Signed links:** invoice and receipt links work even with the shop offline. The document
+    is signed (BIP-340) with the request's key, compressed, and put in the URL fragment
+    (`#/invoice/…`, `#/receipt/…`), which browsers never send to a server. The signature stops
+    the items or total being changed; it doesn't prove who the shop is.
+  - **Data on the device:** profile, catalogue and invoices stay in the shop's browser
+    (IndexedDB), and are included in its backup.
+
+```mermaid
+sequenceDiagram
+  participant Pe as Payee's phone
+  participant S as POS server
+  participant Pa as Payer's wallet
+  participant M as cdk-mintd
+  Pe->>S: create(amount, fresh pubkey)
+  S-->>Pe: payment request (creqA…, NUT-18)
+  Pe-->>Pa: QR code
+  Pa->>M: swap into proofs locked to the pubkey
+  Pa->>S: payment
+  S->>M: unspent? (NUT-07)
+  S-->>Pa: PAID
+  Pe->>S: collect (signed by the request key)
+  Pe->>M: swap, signing with the request key
+  Pe->>S: ack (signed): server deletes its copy
+```
+
+### Proof of reserves
+
+**Point: after every sync the processor checks that the confirmed reserve covers all ecash
+outstanding plus every cash-out in flight, and publishes the result.**
+
+`confirmed reserve ≥ outstanding + in flight`, where:
+
+- **Confirmed reserve:** the reserve wallet's shielded notes at 10 confirmations, plus the
+  mint's own change from mined withdrawals. A note spent by a not-yet-mined withdrawal still
+  counts; it is still on chain.
+- **Outstanding:** ecash issued − ecash redeemed − melt inputs still pending, read from
+  cdk-mintd's database.
+- **In flight:** amount + fee of withdrawals whose transaction isn't mined yet.
+
+These are chosen so a withdrawal never trips the check at any stage.
+
+**What's published.**
+- **`GET /reserves`** (and the Status page) shows the three figures, the chain height, the
+  guardians' health and any withdrawal awaiting the operator, by quote id and amount only.
+- **Never published:** addresses, txids and guardian URLs. `zec-processor operator-actions`
+  prints a flagged withdrawal's address, txid and reason on the host.
+
+**On a shortfall:**
+- `/reserves` answers HTTP 503.
+- The processor logs `RESERVE INVARIANT VIOLATED` once a minute.
+- New deposits are refused.
+
+A reserve cap (1,000,000 zats by default) also refuses deposits that could push the reserve past
+it.
+
+### Privacy model
+
+**Point: payments between ecash users are hidden from the mint and the chain; deposits and
+cash-outs are visible to the mint operator.**
+
+**Hidden, and why:**
+- **Who paid whom.** Blind signatures mean the mint can't link a deposit to the ecash later
+  spent, sent or cashed out.
+- **Payments between users** never touch the chain.
+- **On chain,** the reserve's deposits and cash-outs are shielded (Ironwood), so amounts and
+  addresses aren't public.
+- **Payment requests:** each one uses a fresh key, so the mint can't link one shop's payments
+  when they are redeemed.
+
+**Revealed:**
+- **To the mint operator:** deposit and cash-out amounts and times, and each cash-out's address.
+- **To the guardians:** each cash-out's address, which they read from the mint's quote to check
+  it.
+- **To the mint, through timing:** a deposit followed shortly by a cash-out of a similar amount
+  can be linked.
+- **To each server you connect to:** your IP address.
+- **To the POS server:** request amounts and payment times.
+- **To the light-wallet server (zec.rocks):** the mint's own broadcasts and chain queries.
+
+**Practical advice:**
+- Deposit and cash out round amounts.
+- Wait between depositing and cashing out.
+- Cash out to a fresh address.
+- Use a VPN or Tor to hide your IP address.
+
+### Trust and security model
+
+**Point: you trust the mint operator to stay online and honest about issuing, the guardians for
+custody, and the light-wallet server for chain data.**
+
+| You trust | For | If it fails |
+|---|---|---|
+| The mint (cdk-mintd + processor, main host) | Availability; issuing ecash only for real deposits | You can't redeem or cash out while it's down. A dishonest mint could issue unbacked ecash: the reserve check reads the mint's own records, so it can't catch a mint that lies about them. |
+| The guardians (2 of 3) | Custody of the reserve | Any two together can spend it; one alone can't |
+| The light-wallet server | Chain data and broadcasting | Deposits or cash-outs stall; it can't move funds |
+
+| Threat | How it's handled |
 |---|---|
-| `guardian-{1,2,3}.key` | each guardian's FROST key share (secret; together they control the reserve) |
-| `frost-pubkeys.json` | the guardians' public key package |
-| `mint.ufvk` | the reserve's view-only key (Orchard `ak` = group key) |
-| `user-wallet.seed` | devwallet user wallet (zebrad's `miner_address`) |
-| `ecash-wallet.seed` | zec-ecash-cli wallet |
+| The main host is compromised | It holds one key share (guardian 1) and the guardians' auth secrets, so it can ask guardians 2 and 3 to sign. They sign only a transaction matching a PENDING quote that the mint reports, but that mint runs on the same host. **This limits a compromised processor, not a compromised mint.** |
+| One guardian is compromised | One share can't sign. It can refuse to sign; the other two still can. |
+| A reorg | Withdrawals return to Pending and are rebroadcast; PAID only at depth; paid withdrawals are watched for 100 blocks. |
+| A crash mid-withdrawal | The txid is saved before broadcast; on restart, unbroadcast withdrawals fail (refunded) and broadcast ones are resent. |
+| A double spend | The mint's spent list by `Y`; the swap is atomic. The POS server also checks NUT-07 and refuses a reused `Y`. |
+| A stolen token | Ecash is a bearer note: whoever redeems first gets it. Locked tokens (receive codes, payment requests) can only be redeemed by the key holder. A backup file is spendable money too. |
+| A guardian round replayed or forged | Each round request carries an HMAC over method, path, timestamp and body, within 60 s and never replayed, checked before any nonce is made; TLS on mainnet. |
 
-Nothing generates keys implicitly: zec-processor, the guardians and the CLI fail at startup if
-theirs are missing. Everything else in `devnet/` is chain or mint state and may be deleted by a reset.
+**What's real and what's limited:**
 
-### Start, check, reset
+| | Status |
+|---|---|
+| Deposits, transfers, cash-out with FROST, Status page, offline receive, payment requests | Live on mainnet ([evidence](docs/mainnet-evidence.md)) |
+| Shop mode | In the mainnet web wallet; tested end to end on the devnet (`npm run e2e:shop`) |
+| Judge kit | Claim links, the tour and public links (one per browser), tested end to end on the devnet (`npm run e2e:judge`); TODO(verify): deployed to mainnet? ([runbook](docs/judge-kit.md)) |
+| Reorg handling | Unit-tested (`crates/zec-processor/src/withdraw.rs`); TODO(verify): tried by hand on the devnet with `invalidateblock`? |
+| Guardian independence | Simulated: one operator runs all three (two servers and a laptop) |
+| Chain data | A third-party light-wallet server (zec.rocks); no node of our own |
+| Mint | Stock cdk-mintd 0.18.2. It reports every failed cash-out quote as "Unit unsupported"; the wallet asks the processor for the real reason. |
+| Audit | None |
+| Size | A reserve cap (1,000,000 zats by default); deposits and cash-outs from 10,000 to 1,000,000 zats each |
 
-    scripts/devnet-up.sh            # zebrad -> guardians 1-3 -> zec-processor -> cdk-mintd; waits for each
-    ./devnet/mine.sh 110            # on a fresh chain: coinbase matures after 100 blocks
-    scripts/devnet-up.sh status     # one line each; "guardians up: 1 2 down: 3 -> 2/3, can sign"
-    scripts/guardians stop 3        # stop/start single guardians (start 3 to bring it back)
-    scripts/devnet-reset.sh         # stop everything, delete chain + mint state, keep devnet/keys
-    scripts/devnet-reset.sh --new-keys   # also new FROST keys, mint.ufvk and wallet seeds (asks first)
+## Technology
 
-Shell environment: `source scripts/env.sh` exports `.env` (CDK_MINTD_MNEMONIC, ZEC_MINT_URL,
-ZEC_MINT_CA with an absolute path) into your shell and fails loudly if the mint URL or CA is
-missing. The CLI also reads `.env` from the repo root, but warns when `ZEC_MINT_URL` is unset.
+**Stack** (versions from `Cargo.toml` and `web/package.json`):
 
-Logs live in `devnet/logs/`. zec-processor, the guardians and the CLI rotate their own logs at
-10 MB (5 old files kept). zebrad, cdk-mintd and the web server append to `devnet/logs/*.log`,
-which `scripts/log-trim.sh` (started by `devnet-up.sh`, checked by `status`) cuts back to the
-last 2 MB once a file passes 20 MB; it also keeps only 7 of cdk-mintd's daily files.
+| Part | What |
+|---|---|
+| Mint | `cdk-mintd` 0.18.2, unmodified; `cdk`, `cdk-common`, `cdk-payment-processor`, `cdk-redb` 0.18.2 |
+| Zcash | librustzcash crates: `zcash_primitives` 0.30.1, `zcash_protocol` 0.10.6, `zcash_keys` 0.16.1, `zcash_client_backend` 0.24.0, `zcash_client_sqlite` 0.22.0, `zcash_proofs` 0.30.0, `pczt` 0.9.3; `orchard` =0.15.5 |
+| Threshold signing | `reddsa` 0.5 (FROST over RedPallas), `frost-rerandomized` 3.0.0 |
+| Network upgrade | Ironwood (NU6.3), mainnet activation at block 3,428,143 (asserted in `crates/zec-network`) |
+| Devnet node | Zebra 6.4.2 (regtest, with its built-in light-wallet gRPC) |
+| Web wallet | `@cashu/cashu-ts` 4.11.0, Vite 6.4.3, TypeScript 5.9.3, `pdf-lib` 1.17.1, `qr-scanner` 1.4.2, `qrcode` 1.5.4, `@noble/curves` and `@noble/hashes` 2.4.0 |
+| Serving | Caddy (HTTPS, static files, reverse proxy) |
 
-`devnet-reset.sh` deletes `devnet/zebra-state`, `devnet/mint` (cdk-mintd's work dir), every wallet
-DB (`devnet/*.sqlite`, `devnet/*.redb`), the processor DB, `guardian-*.signed.json` (per-quote state
-tied to the mint DB) and logs, and prints each path. Reserves and issued ecash only stay in step
-if all of these go together, so don't delete them piecemeal. Without `--new-keys` all addresses
-stay the same and `miner_address` stays valid. With it, reserves held by the old FROST key become
-unspendable (devnet only), and it prints the new user address for `miner_address` in
-`devnet/zebrad-regtest.toml`. Logs: `devnet/{zebrad,guardian-N,processor,mintd}.log`.
+**Cashu NUTs used:**
 
-- Light-wallet gRPC: http://127.0.0.1:9067 (plaintext; point zec-processor here)
-- JSON-RPC: http://127.0.0.1:18232 (`generate`, `getblockcount`)
-- Wallet code must use `regtest::regtest_network()`; its heights must match the toml.
-- Mine a block after each send (`./devnet/mine.sh`) so it confirms.
+| NUT | For |
+|---|---|
+| 00 | Blind signatures and `cashuB` tokens |
+| 01, 02 | The mint's public keys and keysets |
+| 03 | Swaps: receiving, change, making locked tokens |
+| 04 | Deposits (mint quotes), custom method `zec`, unit `zat` |
+| 05 | Cash-outs (melt quotes), method `zec` |
+| 06 | Mint info (`/v1/info`) |
+| 07 | Proof states: the POS server's checks, "was my token received?" |
+| 08 | Blank outputs for a cash-out's change |
+| 09 | Restoring signatures whose answer was lost (deposits, change, payment collection) |
+| 10, 11 | Spending conditions and P2PK locks: offline receive, payment requests |
+| 12 | DLEQ proofs: checking mint signatures offline |
+| 18 | Payment requests (`creqA…`) |
+| 20 | Deposit quotes locked to the wallet's key |
 
-## Test wallet
-`devwallet` is a regtest-only wallet (NOT for real funds) over the `zec-wallet` library crate,
-which zec-processor will reuse for the mint's reserve wallet. Run it from the repo root.
-Global flags go before the command:
-`--seed <path>` (default `devnet/keys/user-wallet.seed`), `--db <path>` (default
-`devnet/<seed name>.sqlite`), `--ufvk <path>` (a view-only wallet instead, in its own DB
-`devnet/<name>-view.sqlite`) and `--lightwalletd <url>` (default `http://127.0.0.1:9067`).
+**Why these choices:**
+- **A separate gRPC processor:** the mint is stock cdk-mintd, which needs no changes, and the
+  Zcash crates can't share a Cargo build with the mint's own crates anyway (`libsqlite3-sys`,
+  `sha2`).
+- **A view-only reserve wallet and FROST:** no process ever holds the whole spend key.
+- **PCZTs:** the guardians can check the exact transaction they sign.
+- **Ironwood (Orchard-format addresses):** the reserve and every cash-out stay shielded.
+- **A light-wallet server only:** the processor needs no local node on mainnet.
+- **A web wallet:** nothing to install; it works on any phone, and offline.
 
-    cargo run -p devwallet -- new                       # create the seed, print its address
-    cargo run -p devwallet -- address                   # print the uregtest1... address
-    cargo run -p devwallet -- sync                      # scan to the chain tip, print its height
-    cargo run -p devwallet -- balance                   # sync, then spendable/pending per pool
-    cargo run -p devwallet -- send <uregtest1...> <zats>   # sync, build, prove, sign, broadcast
-    cargo run -p devwallet -- --seed devnet/keys/other.seed new     # a second, independent wallet
-    cargo run -p devwallet -- --ufvk devnet/keys/mint.ufvk balance  # the mint reserve, view-only
+## Repository layout
 
-- Put the user wallet's address in `devnet/zebrad-regtest.toml` `[mining] miner_address`.
-- Coinbase needs 100 confirmations, shielded coinbase included (ZIP 213): the wallet locks each
-  younger coinbase note, so it shows as pending and is never picked for a payment (the wallet
-  library only checks this for transparent coinbase). On a fresh chain, `./devnet/mine.sh 110`.
-- After `send`, run `./devnet/mine.sh 1`, then `balance`. Notes are spendable after 1
-  confirmation (the regtest default); set `ZEC_MIN_CONFIRMATIONS` to use the processor's depth,
-  e.g. `ZEC_MIN_CONFIRMATIONS=3 cargo run -p devwallet -- --ufvk devnet/keys/mint.ufvk
-  --db devnet/mint-view.sqlite balance`. The zec-processor reserve wallet always uses
-  `ZEC_MIN_CONFIRMATIONS`, for its balance and for the notes a withdrawal may spend. Change goes to Ironwood.
-- Wallets start scanning at block 2 (Zebra rejects a tree-state request for block 0), so the
-  user wallet doesn't see block 1's coinbase.
-- Sapling proving parameters are compiled in (`zcash_proofs` `bundled-prover`), so nothing is
-  downloaded; a send takes ~30 s in a debug build.
-- The ecash CLI's seed is created once with `cargo run -p zec-ecash-cli -- init`
-  (`scripts/devnet-reset.sh --new-keys` does it); its wallet DB is `devnet/ecash-wallet.redb`.
+| Path | What |
+|---|---|
+| `crates/zec-processor` | The mint's payment backend: deposits, cash-outs, FROST coordination, reserve check, status endpoints |
+| `crates/guardian` | One FROST key share: DKG ceremony, signing policy (checks a-h), TLS + HMAC transport |
+| `crates/zec-frost` | FROST (RedPallas, re-randomised) helpers and wire format shared by processor and guardians |
+| `crates/zec-wallet` | Zcash wallet library (light-wallet sync, PCZT building, FROST signer) used by the processor and devwallet |
+| `crates/zec-network` | Which network (`ZEC_NETWORK`): consensus parameters, ports and defaults |
+| `crates/pos` | Payment-request (NUT-18) server, and the public judge links; ported from thesimplekid's cashu-payment-backend |
+| `crates/zec-ecash-cli` | Demo ecash wallet CLI on CDK (deposit, send, receive, pay, withdraw, reserves, judge kits) |
+| `crates/devwallet` | Regtest Zcash wallet for the devnet (pays deposits, receives cash-outs) |
+| `crates/devlog` | Size-capped log files |
+| `web/` | The web wallet (Vite + TypeScript + cashu-ts), with unit and browser tests |
+| `mintd/` | cdk-mintd configs (`config.toml` devnet, `config.mainnet.toml`) |
+| `scripts/` | Devnet start/reset/DKG, mint host and certificates, guardian control, guardian CA, mainnet start, server checks, log trimming |
+| `deploy/` | Caddyfile, systemd units and env templates for mainnet |
+| `devnet/` | Devnet state (gitignored) plus `mine.sh` and the Zebra config |
+| `docs/` | [Mainnet deployment](docs/deploy-mainnet.md), [processor reference](docs/processor.md), [devnet details](docs/devnet.md), [judge kit](docs/judge-kit.md), [mainnet evidence](docs/mainnet-evidence.md) |
+
+## Run it locally (devnet)
+
+Everything runs on one machine against a private regtest chain.
+[docs/devnet.md](docs/devnet.md) has the details.
+
+**Prerequisites:**
+- Rust stable (`rustup`) and `protoc` (`brew install protobuf` or
+  `apt-get install protobuf-compiler`).
+- `cargo install zebrad --version 6.4.2 --locked`
+- `cargo install cdk-mintd --version 0.18.2 --locked`
+- `CDK_MINTD_MNEMONIC="<24 words>"` in `.env`, the mint's only mnemonic source.
+- For the web wallet: Node 20 or newer and `mkcert`.
+
+**Start the devnet.** First time on a fresh chain, also create the keys and mine past coinbase
+maturity (see [devnet.md](docs/devnet.md#keys-devnetkeys-gitignored-survives-every-reset)).
+
+    scripts/devnet-up.sh            # zebrad, guardians 1-3, zec-processor, cdk-mintd, web, pos
+    scripts/devnet-up.sh status     # one line per service
+    source scripts/env.sh           # mint URL and CA into this shell
+
+**The web wallet over HTTPS:**
+
+    (cd web && npm ci)
+    scripts/set-mint-host.sh --init     # first time: adopt mkcert's root as web/certs/rootCA.pem
+    scripts/set-mint-host.sh            # point everything at this Mac's .local name
+
+Then open `https://<LocalHostName>.local:5173`. On a phone, trust `web/certs/rootCA.pem` first
+([how](docs/devnet.md#web-wallet-on-a-phone)).
+
+**Deposit, send, receive, cash out with the CLI:**
+
+    cargo run -p zec-ecash-cli -- deposit 50000         # prints an address, waits, mints
+    cargo run -p devwallet -- send <that address> 50000 && ./devnet/mine.sh 1   # in another terminal
+    cargo run -p zec-ecash-cli -- send 5000             # prints a cashuB token and a QR code
+    cargo run -p zec-ecash-cli -- --wallet bob receive <token>
+    cargo run -p zec-ecash-cli -- withdraw 20000 $(cargo run -q -p devwallet -- address)
+    ./devnet/mine.sh 1                                  # the CLI prints PAID and the txid
+    cargo run -p zec-ecash-cli -- reserves              # the reserve check
+
+**Tests:**
+
+    cargo test --workspace                    # Rust unit tests
+    (cd web && npm test)                      # web unit tests
+    (cd web && npm run e2e:devnet)            # browser tests on the running devnet
+    (cd web && npm run e2e:shop)
+    (cd web && npm run e2e:beginner)
+    (cd web && npm run e2e:judge)             # judge kit: claim links, the tour, public links
+    (cd web && npm run e2e:audit)             # accessibility audit
+    (cd web && NODE_EXTRA_CA_CERTS=certs/rootCA.pem node tests/e2e/pos-api.mjs)
+    (cd web && node --experimental-websocket tests/e2e/pos-page.mjs)
+
+The browser tests need headless Chrome. The ones that deposit can hit the reserve cap on a
+long-used devnet ([fix](docs/devnet.md#start-check-reset)).
+
+## Deploying on mainnet
+
+1. Three machines: a main host (Caddy, cdk-mintd, zec-processor, guardian 1), a second server
+   (guardian 2) and a third machine (guardian 3).
+2. A distributed key ceremony (DKG): each guardian makes its own key share on its own machine.
+3. TLS and per-guardian HMAC secrets between the processor and the guardians.
+4. `mainnet/.env`, the systemd units in `deploy/systemd/`, and Caddy from `deploy/Caddyfile.example`.
+5. A first deposit and cash-out by the operator, behind the reserve cap.
+
+Step by step: [docs/deploy-mainnet.md](docs/deploy-mainnet.md).
+
+## Mainnet evidence
+
+Deposit and cash-out transactions, block heights and `/reserves` snapshots:
+[docs/mainnet-evidence.md](docs/mainnet-evidence.md).
+
+## Limitations and roadmap
+
+**Limits today:**
+- **Guardians:** one operator runs all three, so the 2-of-3 split is real in the code but not
+  yet in who holds the keys. A compromised main host also controls the mint the guardians check
+  against.
+- **Chain data:** comes from a third-party light-wallet server.
+- **Audit:** none.
+- **Size:** small amounts only, with a reserve cap of 1,000,000 zats by default.
+- **Cash-out errors:** the stock mint shows every failed cash-out quote as "Unit unsupported";
+  the wallet asks the processor for the real reason.
+- **Storage:** the web wallet's money lives in one browser's storage; a backup file is the only
+  copy elsewhere.
+
+**Next steps (not done):**
+- Guardians run by different, independent people.
+- Our own Zcash node instead of a third-party server.
+- Paying in Zcash directly at the shop counter.
+- A Cashu NUT proposal for a Zcash payment method.
+- A security audit.
+
+## Credits and license
+
+- [Cashu](https://cashu.space) and the [Cashu Development Kit (CDK)](https://github.com/cashubtc/cdk):
+  the protocol, `cdk-mintd` and the Rust wallet.
+- [cashu-ts](https://github.com/cashubtc/cashu-ts): the web wallet's Cashu library.
+- thesimplekid's [cashu-payment-backend](https://github.com/thesimplekid/cashu-payment-backend)
+  (MIT): the reference for the POS server in `crates/pos`.
+- Electric Coin Company's librustzcash crates (`zcash_*`, `pczt`) and `orchard`.
+- The Zcash Foundation's Zebra, `reddsa` and FROST crates.
+
+Licensed under the [Apache License 2.0](LICENSE). `crates/pos` is ported from thesimplekid's
+cashu-payment-backend (MIT); its header lists the changes.

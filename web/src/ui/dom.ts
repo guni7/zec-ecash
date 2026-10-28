@@ -72,6 +72,53 @@ export async function copyText(text: string, what: string) {
   }
 }
 
+/** iPhone or iPad (iPadOS reports a Mac, but one with touch). */
+export const isIos = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+/** Opened from the Home Screen (installed), not in a browser tab. */
+export const standalone = () => matchMedia('(display-mode: standalone)').matches || (navigator as Navigator & { standalone?: boolean }).standalone === true;
+
+/**
+ * A file to the person: the share sheet on a phone (Save to Files, AirDrop, …), else a download.
+ * The installed iOS app never gets a plain download: it would open the file with no way back.
+ * Returns false if the person cancelled.
+ */
+export async function saveFile(bytes: BlobPart, name: string, type: string): Promise<boolean> {
+  const file = new File([bytes], name, { type });
+  const iosApp = isIos() && standalone();
+  if ((iosApp || matchMedia('(pointer: coarse)').matches) && navigator.canShare?.({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: name });
+      return true;
+    } catch (e) {
+      const why = (e as Error).name;
+      if (why === 'AbortError') return false;
+      // Safari shares only right after a tap; building the file can use that up: ask for one more
+      if (why === 'NotAllowedError') return saveOnTap(file);
+    }
+  }
+  const a = h('a', { href: URL.createObjectURL(file), download: name });
+  document.body.append(a);
+  a.click();
+  a.remove();
+  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  toast(`Saved ${name}`, 'ok');
+  return true;
+}
+
+/** "Your file is ready" with a Save button, whose tap opens the share sheet. */
+function saveOnTap(file: File): Promise<boolean> {
+  return new Promise((done) => {
+    const save = h('button', { type: 'button', class: 'btn primary' }, svg(ICON.share), 'Save');
+    const cancel = h('button', { type: 'button', class: 'btn ghost' }, 'Cancel');
+    const sheet = h('div', { class: 'save-sheet', role: 'dialog', 'aria-label': 'Save file' }, h('p', null, h('strong', null, file.name), ' is ready.'), h('div', { class: 'row wrap' }, save, cancel));
+    const close = (saved: boolean) => (sheet.remove(), done(saved));
+    save.onclick = () => void navigator.share({ files: [file], title: file.name }).then(() => close(true), () => close(false));
+    cancel.onclick = () => close(false);
+    document.body.append(sheet);
+    save.focus();
+  });
+}
+
 /** A tap-to-copy chip showing u1uwp7…082s; the full text is in its label. */
 export function copyChip(text: string, what: string, head = 6, tail = 4) {
   return h(

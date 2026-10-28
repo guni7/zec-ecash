@@ -13,11 +13,12 @@ export const receive: Page = {
   render(app, route) {
     const id = route.params.get('r');
     const rec = id ? app.posreq.records().find((r) => r.id === id) : undefined;
-    return rec ? requestView(app, rec, Number(route.params.get('served') ?? 0)) : start(app);
+    return rec ? requestView(app, rec, Number(route.params.get('served') ?? 0)) : start(app, route.params.get('do'));
   },
 };
 
-function start(app: App) {
+/** `open`: a choice to open straight away (deep links, e.g. the judges' tour): request | without. */
+function start(app: App, open?: string | null) {
   const body = h('div', { class: 'flow' });
   let mode: 'start' | 'flow' = 'start';
   const ctx: Ctx = {
@@ -112,6 +113,8 @@ function start(app: App) {
   };
 
   draw();
+  if (open === 'without') keyView();
+  else if (open === 'request' && online(app)) askAmount();
   void probe();
   const timer = setInterval(() => online(app) && void probe(), 15_000);
   const offNet = onConnectivity(app, () => {

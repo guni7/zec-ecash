@@ -1,6 +1,6 @@
 // Pieces the shop pages share: state badges, totals blocks, line tables, PDF and CSV delivery
 // (the share sheet on phones, a download on desktop), and links.
-import { h, toast } from '../../ui/dom';
+import { h, saveFile } from '../../ui/dom';
 import { kv, moneyEl } from '../../ui/widgets';
 import { moneyText } from '../../ui/words';
 import { STATE_LABEL, type Line, type State } from '../model';
@@ -50,24 +50,7 @@ export function totalsBlock(t: { subtotal: number; tax: number; total: number },
 }
 
 /** A file to the person: the share sheet on a phone (where it saves or sends it), else a download. */
-export async function deliver(bytes: Uint8Array | string, name: string, type: string) {
-  const file = new File([bytes as BlobPart], name, { type });
-  const phone = matchMedia('(pointer: coarse)').matches;
-  if (phone && navigator.canShare?.({ files: [file] })) {
-    try {
-      await navigator.share({ files: [file], title: name });
-      return;
-    } catch (e) {
-      if ((e as Error).name === 'AbortError') return;
-    }
-  }
-  const a = h('a', { href: URL.createObjectURL(file), download: name });
-  document.body.append(a);
-  a.click();
-  a.remove();
-  setTimeout(() => URL.revokeObjectURL(a.href), 2000);
-  toast(`Saved ${name}`, 'ok');
-}
+export const deliver = (bytes: Uint8Array | string, name: string, type: string) => saveFile(bytes as BlobPart, name, type);
 
 /** The PDF module, loaded the first time someone exports. */
 export const pdfKit = () => import('../pdf');

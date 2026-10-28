@@ -10,14 +10,16 @@ export const PATHS = [
   '/', '/send', '/scan', '/receive', '/activity', '/deposit', '/withdraw', '/status', '/settings', '/welcome',
   // shop mode, and what customers open from a shop's link
   '/charge', '/invoices', '/dashboard', '/shop', '/invoice', '/receipt',
+  // hackathon judges: a claim link (#/claim/<token>) and the tour
+  '/claim', '/judges',
 ] as const;
 export type Path = (typeof PATHS)[number];
 
 /** Pages that moved: the old path still works, with its parameters. */
 export const REDIRECTS: Record<string, Path> = { '/request': '/receive' };
 
-/** Pages whose data is in the path: #/invoice/<data> -> /invoice with d=<data>. */
-const DATA_PATHS = ['/invoice', '/receipt'];
+/** Pages whose data is in the path: #/invoice/<data> -> /invoice with d=<data> (#/claim/<token> too). */
+const DATA_PATHS = ['/invoice', '/receipt', '/claim'];
 
 /** '#/send?t=1' -> { path: '/send', params: t=1 }. Unknown paths go home. */
 export function parse(hash: string): Route & { path: Path; moved?: boolean } {

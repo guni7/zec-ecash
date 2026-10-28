@@ -4,6 +4,7 @@ import './setup';
 import assert from 'node:assert/strict';
 import { beforeEach, test } from 'node:test';
 import { Amount, OutputData, type Proof, type Wallet } from '@cashu/cashu-ts';
+import { applyChange } from '../src/wallet/core';
 import { initOnchain, type Deposit, type Withdrawal } from '../src/wallet/onchain';
 
 const MINT = 'https://mint.test/mint';
@@ -48,7 +49,7 @@ function harness(mint: Partial<Record<string, (...a: never[]) => unknown>>) {
     mainnet: false,
     connect: async () => wallet,
     proofs: () => proofs,
-    setProofs: (p) => (proofs = p),
+    changeProofs: (c) => (proofs = applyChange(proofs, c)),
     say: (t) => said.push(t),
     explain: (e) => (e instanceof Error ? e.message : String(e)),
     isNetworkError: (e) => e instanceof TypeError,

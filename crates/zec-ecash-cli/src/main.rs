@@ -18,6 +18,8 @@
 //!   zec-ecash-cli withdraw <zat> <uregtest1...>   # melt ecash to a ZEC address
 //!   zec-ecash-cli reserves                     # the processor's reserve check: confirmed ZEC
 //!                                              # reserve vs. outstanding ecash + in flight
+//!   zec-ecash-cli judge-kit create <count> <zat> [--names names.txt] [--base <url>] [--public]
+//!   zec-ecash-cli judge-kit status|reclaim     # claim links for hackathon judges (src/judge.rs)
 //!
 //! Global flags (before the command), each also settable in the environment or `.env`:
 //!   --wallet <name>   default "ecash": seed devnet/keys/<name>-wallet.seed (survives resets),
@@ -34,6 +36,7 @@
 //! MAINNET: paths are under mainnet/ instead of devnet/, and ZEC_MINT_URL / ZEC_MINT_CA come only
 //! from mainnet/.env or the flags, never from the shell (scripts/env.sh exports the devnet's).
 //! The seed is never created implicitly: `init` creates it once.
+mod judge;
 mod tokens;
 
 use std::{
@@ -357,10 +360,12 @@ async fn run(opts: Opts) -> Result<()> {
             println!("{before} proofs -> {after} proofs; balance {total} zat");
         }
         ["balance"] => println!("{} zat", u64::from(wallet.total_balance().await?)),
+        ["judge-kit", rest @ ..] => judge::run(&wallet, dir, &opts.mint_url, rest).await?,
         _ => bail!(
             "usage: zec-ecash-cli [--wallet <name>] [--mint <url>] [--mint-ca <pem>] \
              <init|deposit <zat>|mint <quote_id>|send <zat> [--lock <pubkey>] [--dleq]|receive <token>|check <token>|\
-             pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance|reserves>"
+             pubkey|pay <creqA>|consolidate|pending|reclaim <id>|withdraw <zat> <address>|balance|reserves|\
+             judge-kit <create <count> <zat> [--names <file>] [--public] | status | reclaim>>"
         ),
     }
     Ok(())

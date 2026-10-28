@@ -203,6 +203,7 @@ function showing(app: App, s: SentToken): Node[] {
   return [
     moneyEl(s.amount, { cls: 'code-money' }),
     qrCard(s.token, { label: `QR code for ${moneyText(s.amount)}`, ecc: 'L' }),
+    sizeNote(s),
     h('div', { class: 'row thumb-row' }, share, copy),
     h('p', { class: 'warn-line' }, s.lockedTo ? 'Show this to them. Only they can take this money.' : 'Anyone who scans this can take the money, like handing over cash.'),
     h('div', { class: 'status-line' }, waiting('Waiting for them…')),
@@ -214,6 +215,20 @@ function showing(app: App, s: SentToken): Node[] {
       h('div', { class: 'row wrap' }, check, mark),
     ),
   ];
+}
+
+/**
+ * Why this QR code is as dense as it is: the code carries the coins themselves (proofs, powers of
+ * two), so its size grows with how many there are; codes with DLEQ proofs carry one per coin too.
+ */
+function sizeNote(s: SentToken): HTMLElement {
+  const coins = s.proofs.length;
+  return h(
+    'p',
+    { class: 'hint qr-size-note' },
+    `Smaller amounts are easier to scan. This code is the money itself${coins ? `: ${coins} ${coins === 1 ? 'coin' : 'coins'}` : ''}, and every coin makes the QR code denser. Amounts are made of coins of 1, 2, 4, 8, 16… zats, so a smaller amount usually needs fewer coins.`,
+    s.compact ? '' : ' This code also carries a proof for each coin, so it can be checked offline, which makes it bigger still.',
+  );
 }
 
 /** Paying someone's code: Paid (plain or as an extra or partial payment), or not delivered yet. */

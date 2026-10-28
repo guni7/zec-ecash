@@ -12,6 +12,7 @@
     "e2e:beginner": "node --experimental-websocket tests/e2e/beginner.mjs",
     "e2e:audit": "node --experimental-websocket tests/e2e/audit.mjs",
     "e2e:shop": "node --experimental-websocket tests/e2e/shop.mjs",
+    "e2e:judge": "node --experimental-websocket tests/e2e/judge.mjs",
     "build": "tsc --noEmit && vite build"
   },
   "dependencies": {

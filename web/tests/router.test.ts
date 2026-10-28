@@ -100,3 +100,13 @@ test('activity feed: payment requests link to Receive; partial payments carry th
   );
   assert.ok(!feed.some((f) => /\b(mint|token|ecash|zat)\b/i.test(`${f.title} ${f.status}`)));
 });
+
+test('claim links: the token comes from the fragment path; the tour has its own page', () => {
+  const r = parse('#/claim/cashuBo2FteCJodHRwczovL2V4YW1wbGU');
+  assert.equal(r.path, '/claim');
+  assert.equal(r.params.get('d'), 'cashuBo2FteCJodHRwczovL2V4YW1wbGU');
+  assert.equal(parse('#/claim').path, '/claim', 'after the token is taken out of the address bar');
+  assert.equal(parse('#/claim').params.get('d'), null);
+  assert.equal(parse('#/judges').path, '/judges');
+  assert.equal(parse('#/send?do=show').params.get('do'), 'show');
+});

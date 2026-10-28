@@ -7,7 +7,7 @@ import { setZatsFirst } from './words';
 
 /** shop: Receive's 'Keep open for the next customer' (a new request after each payment);
  * shopMode: the merchant navigation (Charge · Invoices · Dashboard · Wallet · Settings). */
-export type Prefs = { zatsFirst?: boolean; welcomed?: boolean; backupAt?: number; shop?: boolean; shopMode?: boolean };
+export type Prefs = { zatsFirst?: boolean; welcomed?: boolean; backupAt?: number; shop?: boolean; shopMode?: boolean; demoShop?: boolean };
 
 export function createPrefs(storeKey: string) {
   let prefs = loadJson<Prefs>(storeKey, {});

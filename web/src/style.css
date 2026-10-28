@@ -912,3 +912,22 @@ html { -webkit-tap-highlight-color: transparent; }
   .item-btn:hover { border-color: var(--line-2); }
   .feed-row:hover, .list-row:hover, .inv-row:hover { background: transparent; }
 }
+/* judges: claim and tour */
+.claim-line { margin: 0; font: 700 clamp(20px, 5vw, 26px) / 1.25 var(--font-display); text-wrap: balance; }
+.tour-top { display: flex; flex-direction: column; gap: 6px; }
+.money.tour-balance { align-items: flex-start; }
+.money.tour-balance .m-main { font: 700 clamp(30px, 8vw, 40px) var(--font-display); color: var(--gold); }
+.tour-progress { margin: 0; color: var(--live); font-weight: 700; }
+.tour { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 12px; }
+.tour-step { display: flex; flex-direction: column; gap: 8px; }
+.tour-step p { margin: 0; }
+.tour-step.done { border-color: #16403c; }
+.tour-head { display: flex; justify-content: space-between; align-items: center; gap: 10px; flex-wrap: wrap; }
+.tour-check { display: flex; align-items: center; gap: 10px; min-height: 44px; cursor: pointer; flex: 1; min-width: 0; }
+.tour-tick { width: 24px; height: 24px; accent-color: var(--live); flex: none; }
+.tour-n { color: var(--gold); font-size: 13px; }
+.tour-step.done .tour-check strong { color: var(--fg-2); }
+.tour-special { color: var(--live); font-size: 14px; }
+.tour-special::before { content: '★ '; }
+.tour-qr .qr-card { width: min(100%, 220px); }
+.tour-summary { margin: 0; padding-left: 20px; display: flex; flex-direction: column; gap: 6px; color: var(--fg-2); }

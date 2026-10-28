@@ -19,6 +19,8 @@ import { createPosRequests } from './wallet/posreq';
 import { holdings } from './wallet/backup';
 import { h, toast } from './ui/dom';
 import { activity } from './ui/pages/activity';
+import { claim } from './ui/pages/claim';
+import { judges } from './ui/pages/judges';
 import { deposit } from './ui/pages/deposit';
 import { home } from './ui/pages/home';
 import { receive } from './ui/pages/receive';
@@ -132,6 +134,8 @@ const PAGES: Record<Path, Page> = {
   '/status': status,
   '/settings': settings,
   '/welcome': welcome,
+  '/claim': claim,
+  '/judges': judges,
   '/charge': shopPage('charge', 'Charge'),
   '/invoices': shopPage('invoices', 'Invoices'),
   '/dashboard': shopPage('dashboard', 'Dashboard'),

@@ -12,7 +12,7 @@ export const send: Page = {
     const id = route.params.get('t');
     const token = id ? app.tokens.sent().find((s) => s.id === id) : undefined;
     if (id && token) return tokenView(app, token, route.params.get('r'));
-    return start(app);
+    return start(app, route.params.get('do'));
   },
 };
 
@@ -41,7 +41,8 @@ export function onConnectivity(app: App, draw: () => void) {
   };
 }
 
-function start(app: App) {
+/** `open`: a choice to open straight away (deep links, e.g. the judges' tour): show | without. */
+function start(app: App, open?: string | null) {
   const body = h('div', { class: 'flow' });
   /** What is showing: no money yet, the three choices, or a flow (the amount, a confirmation). */
   let mode: 'empty' | 'start' | 'flow' = 'start';
@@ -124,6 +125,8 @@ function start(app: App) {
     );
   };
   draw();
+  if (mode === 'start' && open === 'show' && online(app)) ctx.show(showAmount());
+  else if (mode === 'start' && open === 'without' && online(app)) ctx.show(sendOffline());
   const el = h('div', { class: 'page' }, pageHead('Send'), body);
   const offNet = onConnectivity(app, () => mode !== 'flow' && draw());
   const off = app.onChange(() => mode === 'empty' && app.core.balance() > 0 && draw());
